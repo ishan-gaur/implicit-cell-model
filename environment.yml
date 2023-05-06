@@ -1,0 +1,15 @@
+name: implicit
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch
+  - pytorch-cuda=11.8
+  - torchaudio
+  - torchvision
+  - lightning
+  - kornia
+  - imageio
+  - microfilm
+prefix: /home/ishang/miniconda3/envs/implicit
