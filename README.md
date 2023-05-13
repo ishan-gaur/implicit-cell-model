@@ -1,5 +1,7 @@
 # implicit-cell-model
 
+Please lmk if y'all know how to get rid of the `please compile abn` warning when using the segmentation model. Think it has to do with the inplace activated batch-norm library, but I'm not sure why it isn't compiling. Do we need to explicitly install nvcc before install HPA-Cell-Segmentation?
+
 If you get just the raw FUCCI Dataset, you will need to prep it with cell masks and center-of-mass measurements so the centered single-cell images can be extracted from the data upon request.
 
 This can be done from the command-line by running `python FUCCIDataset.py -d {dataset_path}`. Upon completion it will also give a small summary of the data. If you need to recompile these files and want to clean the dataset directory for any reason, just pass the `-c` option (clean).
