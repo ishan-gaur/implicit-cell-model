@@ -4,7 +4,7 @@ import torch
 from torch import optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, random_split
-from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchvision.utils import make_grid
 
 import lightning.pytorch as pl
@@ -99,8 +99,6 @@ class AutoEncoder(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
-        # scheduler = StepLR(optimizer, step_size=1, gamma=0.5) # Define your learning rate scheduler
-        # return [optimizer], [scheduler]
         scheduler = ReduceLROnPlateau(
             optimizer,
             patience=4,
@@ -127,7 +125,8 @@ class ReconstructionVisualization(Callback):
             pl_module.eval()
             reconst_imgs = pl_module(input_imgs)
             pl_module.train()
-        # Plot and add to tensorboard
+        print(f"input: {input_imgs.shape}, reconst: {reconst_imgs.shape}")
+        # Plot and add to wandb
         grid = ReconstructionVisualization.make_reconstruction_grid(input_imgs, reconst_imgs)
         grid = tensor_to_image(grid)
         grid = np.moveaxis(grid, -1, 0)

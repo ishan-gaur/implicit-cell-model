@@ -162,3 +162,5 @@ cython_debug/
 lightning_logs/
 wandb/
 nb_images/
+
+*.png
