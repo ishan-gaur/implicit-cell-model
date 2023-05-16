@@ -54,7 +54,7 @@ class FUCCIDataModule(pl.LightningDataModule):
 class AutoEncoder(pl.LightningModule):
     def __init__(self, encoder, decoder, lr=1e-6):
         super().__init__()
-        self.save_hyperparameters(ignore=["encoder", "decoder"])
+        # self.save_hyperparameters()
 
         self.lr = lr
         self.encoder = encoder
@@ -125,7 +125,7 @@ class ReconstructionVisualization(Callback):
             pl_module.eval()
             reconst_imgs = pl_module(input_imgs)
             pl_module.train()
-        print(f"input: {input_imgs.shape}, reconst: {reconst_imgs.shape}")
+        # print(f"input: {input_imgs.shape}, reconst: {reconst_imgs.shape}")
         # Plot and add to wandb
         grid = ReconstructionVisualization.make_reconstruction_grid(input_imgs, reconst_imgs)
         grid = tensor_to_image(grid)

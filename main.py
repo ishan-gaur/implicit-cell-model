@@ -37,7 +37,7 @@ if args.model not in ["reference", "fucci", "total"]:
 # Experiment parameters and logging
 ##########################################################################################
 config = {
-    "imsize": 256,
+    "imsize": 64,
     "batch_size": 16,
     "num_workers": 16,
     "split": (0.64, 0.16, 0.2),
@@ -47,7 +47,7 @@ config = {
 
 fucci_path = Path(args.data)
 project_name = f"FUCCI_{args.model}_VAE"
-lightning_dir = f"/data/ishang/fucci_vae/lightning_logs/{project_name}_{time.strftime('%M_%H_%m_%d_%Y')}"
+lightning_dir = f"/data/ishang/fucci_vae/lightning_logs/{project_name}_{time.strftime('%Y_%d_%m_%H_%M')}"
 
 def print_with_time(msg):
     print(f"[{time.strftime('%m/%d/%Y @ %H:%M')}] {msg}")
@@ -64,7 +64,7 @@ checkpoint_callback = ModelCheckpoint(
     monitor="val/loss",
     mode="min",
     dirpath=lightning_dir,
-    filename="epoch-{epoch:02d}-val-loss-{val_loss:.2f}",
+    filename="{epoch:02d}-{Val_loss:.2f}",
 )
 
 ##########################################################################################
@@ -91,9 +91,9 @@ print_with_time("Setting up trainer...")
 
 trainer = pl.Trainer(
     default_root_dir=lightning_dir,
-    # accelerator="gpu",
-    # devices=8,
-    accelerator="cpu",
+    accelerator="gpu",
+    devices=8,
+    # accelerator="cpu",
     limit_train_batches=0.1,
     limit_val_batches=0.1,
     limit_test_batches=0.1,
@@ -103,7 +103,7 @@ trainer = pl.Trainer(
     # overfit_batches=5,
     # log_every_n_steps=10,
     logger=wandb_logger,
-    # max_epochs=100,
+    max_epochs=10,
     callbacks=[
         checkpoint_callback,
         EarlyStopping(monitor="val/loss", min_delta=config["min_delta"], mode="min"),

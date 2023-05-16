@@ -3,7 +3,7 @@ from torch.autograd import Variable
 from torch import nn
 import lightning.pytorch as pl
 
-class Encoder(pl.LightningModule):
+class Encoder(nn.Module):
     def __init__(self, nc=1, nf=128, ch_mult=(1, 2, 4, 8, 8, 8), imsize=256, latent_dim=512):
         """
         x should be CHW
@@ -14,7 +14,13 @@ class Encoder(pl.LightningModule):
         batchnorm: use batch normalization
         """
         super().__init__()
-        self.save_hyperparameters()
+        # self.save_hyperparameters()
+
+        if imsize < 2 ** len(ch_mult):
+            raise ValueError("Image size not large enough to accommodate the number of downsampling layers: len(ch_mult).")
+
+        if latent_dim > imsize ** 2:
+            raise ValueError("Latent dimension larger than the number of pixels in the image.")
  
         self.nc = nc
         self.nf = nf * nc
@@ -31,11 +37,6 @@ class Encoder(pl.LightningModule):
                     nn.Conv2d(in_ch, out_ch, 4, 2, 1),
                     nn.LeakyReLU(inplace=True)
                 ) 
-                # if depth > 0 else 
-                # nn.Sequential(
-                #     nn.Conv2d(in_ch, out_ch, 4, 2, 1),
-                #     nn.LeakyReLU(inplace=True)
-                # )
             )
             in_ch = out_ch
 
@@ -53,10 +54,16 @@ class Encoder(pl.LightningModule):
         return self.fc_mu(x), self.fc_logvar(x)
 
 
-class Decoder(pl.LightningModule):
+class Decoder(nn.Module):
     def __init__(self, nc=1, nf=128, ch_mult=(8, 8, 8, 4, 2, 1), imsize=256, latent_dim=512):
         super().__init__()
-        self.save_hyperparameters()
+        # self.save_hyperparameters()
+
+        if imsize < 2 ** len(ch_mult):
+            raise ValueError("Image size not large enough to accommodate the number of downsampling layers: len(ch_mult).")
+
+        if latent_dim > imsize ** 2:
+            raise ValueError("Latent dimension larger than the number of pixels in the image.")
  
         self.nc = nc
         self.nf = nf * nc
