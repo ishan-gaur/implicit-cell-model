@@ -16,6 +16,7 @@ import numpy as np
 import wandb
 
 from FUCCIDataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
+from models import Encoder, Decoder
 
 class FUCCIDataModule(pl.LightningDataModule):
     def __init__(self, data_dir, dataset, batch_size, num_workers, imsize=1024, split=(0.64, 0.16, 0.2)):
@@ -52,13 +53,22 @@ class FUCCIDataModule(pl.LightningDataModule):
 
 
 class AutoEncoder(pl.LightningModule):
-    def __init__(self, encoder, decoder, lr=1e-6):
+    def __init__(self,
+        nc=1,
+        nf=128,
+        ch_mult=(1, 2, 4, 8, 8, 8),
+        imsize=256,
+        latent_dim=512,
+        lr=1e-6,
+        patience=4):
+
         super().__init__()
-        # self.save_hyperparameters()
+        self.save_hyperparameters()
 
         self.lr = lr
-        self.encoder = encoder
-        self.decoder = decoder
+        self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim)
+        self.decoder = Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim)
+        self.patience = patience
 
     def reparameterized_sampling(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -101,7 +111,7 @@ class AutoEncoder(pl.LightningModule):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
         scheduler = ReduceLROnPlateau(
             optimizer,
-            patience=4,
+            patience=self.patience,
         )
         return {
             "optimizer": optimizer,
@@ -162,7 +172,17 @@ class ReconstructionVisualization(Callback):
                 caption="Original and reconstructed images")
         })
 
+    def image_list_normalization(image_list):
+        for i in range(len(image_list)):
+            image_list[i] = image_list[i] - torch.min(image_list[i])
+            image_list[i] = image_list[i] / (torch.max(image_list[i]) - torch.min(image_list[i]))
+            image_list[i] = image_list[i] * 2 - 1
+        return image_list
+
     def make_reconstruction_grid(input_imgs, reconst_imgs):
+        # normalize each image separately to [-1, 1]
+        # input_imgs = ReconstructionVisualization.image_list_normalization(input_imgs)
+        # reconst_imgs = ReconstructionVisualization.image_list_normalization(reconst_imgs)
         imgs = torch.stack([input_imgs, reconst_imgs], dim=1).flatten(0, 1)
         grid = make_grid(imgs, nrow=2, normalize=True, range=(-1, 1))
         return grid

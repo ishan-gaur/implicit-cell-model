@@ -23,8 +23,11 @@ parser = argparse.ArgumentParser(description="Train a model on the FUCCI dataset
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("-s", "--single", action="store_true", help="train single model")
 parser.add_argument("-m", "--model", help="specify which model to train: reference, fucci, or total")
-parser.add_argument("-d", "--data", required=True, help="path to dataset")
-parser.add_argument("-r", "--reason", help="reason for this run")
+parser.add_argument("-f", "--data", required=True, help="path to dataset")
+parser.add_argument("-r", "--reason", required=True, help="reason for this run")
+parser.add_argument("-d", "--dev", action="store_true", help="run in development mode uses 10 percent of data")
+parser.add_argument("-c", "--cpu", action="store_true", help="run on CPU")
+parser.add_argument("-e", "--epochs", type=int, default=100, help="maximum number of epochs to train for")
 
 args = parser.parse_args()
 
@@ -34,19 +37,19 @@ if not args.single:
 if args.model not in ["reference", "fucci", "total"]:
     raise ValueError("Model must be one of: reference, fucci, total")
 
-if args.reason is None:
-    raise ValueError("Please provide a reason for this run.")
-
 ##########################################################################################
 # Experiment parameters and logging
 ##########################################################################################
 config = {
     "imsize": 64,
-    "batch_size": 16,
-    "num_workers": 16,
+    "batch_size": 64,
+    "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
     "lr": 1e-4,
     "min_delta": 1e3,
+    "patience": 3,
+    "stopping_patience": 6,
+    "nf": 128,
 }
 
 fucci_path = Path(args.data)
@@ -54,6 +57,8 @@ project_name = f"FUCCI_{args.model}_VAE"
 log_folder = Path(f"/data/ishang/fucci_vae/{project_name}_{time.strftime('%Y_%d_%m_%H_%M')}")
 if not log_folder.exists():
     os.mkdir(log_folder)
+with open(log_folder / "reason.txt", "w") as f:
+    f.write(args.reason)
 lightning_dir = log_folder / "lightning_logs"
 wandb_dir = log_folder
 
@@ -75,6 +80,15 @@ checkpoint_callback = ModelCheckpoint(
     filename="{epoch:02d}-{Val_loss:.2f}",
 )
 
+if config["patience"] > config["stopping_patience"]:
+    raise ValueError("Patience must be less than stopping patience. LR will never get adjusted.")
+
+stopping_callback = EarlyStopping(
+    monitor="val/loss",
+    min_delta=config["min_delta"],
+    mode="min"
+)
+
 ##########################################################################################
 # Set up data, model, and trainer
 ##########################################################################################
@@ -88,33 +102,34 @@ dm = FUCCIDataModule(
     batch_size=config["batch_size"],
     num_workers=config["num_workers"]
 )
-# dm.setup(args.model)
 
 print_with_time("Setting up Autoencoder...")
-encoder = Encoder(nc=2 if args.model in ["reference", "fucci"] else 4, imsize=config["imsize"])
-decoder = Decoder(nc=2 if args.model in ["reference", "fucci"] else 4, imsize=config["imsize"])
-model = AutoEncoder(encoder, decoder, lr=config["lr"])
+model = AutoEncoder(
+    nc=2 if args.model in ["reference", "fucci"] else 4,
+    nf=config["nf"],
+    imsize=config["imsize"],
+    lr=config["lr"],
+    patience=config["patience"]
+)
 
 print_with_time("Setting up trainer...")
 
 trainer = pl.Trainer(
     default_root_dir=lightning_dir,
-    accelerator="gpu",
-    devices=8,
-    # accelerator="cpu",
-    limit_train_batches=0.1,
-    limit_val_batches=0.1,
-    limit_test_batches=0.1,
+    accelerator="gpu" if not args.cpu else "cpu",
+    devices=8 if not args.cpu else "auto",
+    limit_train_batches=0.1 if args.dev else 1.0,
+    limit_val_batches=0.1 if args.dev else 1.0,
     # fast_dev_run=10,
     # detect_anomaly=True,
     # num_sanity_val_steps=2,
     # overfit_batches=5,
     # log_every_n_steps=10,
     logger=wandb_logger,
-    max_epochs=2,
+    max_epochs=args.epochs,
     callbacks=[
         checkpoint_callback,
-        EarlyStopping(monitor="val/loss", min_delta=config["min_delta"], mode="min"),
+        stopping_callback,
         LearningRateMonitor(logging_interval='step'),
         ReconstructionVisualization()
     ]
@@ -128,5 +143,10 @@ print_with_time("Training model...")
 trainer.fit(model, dm)
 
 print_with_time("Testing model...")
-trainer = pl.Trainer(devices=1, num_nodes=1)
+trainer = pl.Trainer(
+    accelerator="gpu" if not args.cpu else "cpu",
+    devices=1,
+    num_nodes=1,
+    limit_test_batches=0.1 if args.dev else 1.0,
+)
 trainer.test(model, dm)
