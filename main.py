@@ -24,6 +24,7 @@ parser = argparse.ArgumentParser(description="Train a model on the FUCCI dataset
 parser.add_argument("-s", "--single", action="store_true", help="train single model")
 parser.add_argument("-m", "--model", help="specify which model to train: reference, fucci, or total")
 parser.add_argument("-d", "--data", required=True, help="path to dataset")
+parser.add_argument("-r", "--reason", help="reason for this run")
 
 args = parser.parse_args()
 
@@ -32,6 +33,9 @@ if not args.single:
 
 if args.model not in ["reference", "fucci", "total"]:
     raise ValueError("Model must be one of: reference, fucci, total")
+
+if args.reason is None:
+    raise ValueError("Please provide a reason for this run.")
 
 ##########################################################################################
 # Experiment parameters and logging
@@ -47,15 +51,19 @@ config = {
 
 fucci_path = Path(args.data)
 project_name = f"FUCCI_{args.model}_VAE"
-lightning_dir = f"/data/ishang/fucci_vae/lightning_logs/{project_name}_{time.strftime('%Y_%d_%m_%H_%M')}"
+log_folder = Path(f"/data/ishang/fucci_vae/{project_name}_{time.strftime('%Y_%d_%m_%H_%M')}")
+if not log_folder.exists():
+    os.mkdir(log_folder)
+lightning_dir = log_folder / "lightning_logs"
+wandb_dir = log_folder
 
 def print_with_time(msg):
     print(f"[{time.strftime('%m/%d/%Y @ %H:%M')}] {msg}")
 
 wandb_logger = WandbLogger(
     project=project_name,
-    log_model=True,
-    save_dir="/data/ishang/fucci_vae/wandb_logs",
+    # log_model=True,
+    save_dir=wandb_dir,
     config=config
 )
 
@@ -103,7 +111,7 @@ trainer = pl.Trainer(
     # overfit_batches=5,
     # log_every_n_steps=10,
     logger=wandb_logger,
-    max_epochs=10,
+    max_epochs=2,
     callbacks=[
         checkpoint_callback,
         EarlyStopping(monitor="val/loss", min_delta=config["min_delta"], mode="min"),
