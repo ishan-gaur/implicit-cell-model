@@ -72,10 +72,11 @@
             "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "args": [
+                "-d",
                 "-s",
                 "--model",
                 "reference",
-                "-d",
+                "-f",
                 "${workspaceFolder}/FUCCI-dev-data/"
             ]
         },
@@ -90,7 +91,26 @@
                 "-s",
                 "--model",
                 "reference",
-                "-d",
+                "-f",
+                "/data/ishang/Fucci-dataset-v3_filtered/"
+            ]
+        },
+        {
+            "name": "Dev: Speed Benchmark Reference Model",
+            "type": "python",
+            "python": "/home/ishang/miniconda3/envs/implicit/bin/python",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-e",
+                "4",
+                "-r",
+                "'test best batch_size, worker_num combo: 8, 16'",
+                "-s",
+                "-m",
+                "reference",
+                "-f",
                 "/data/ishang/Fucci-dataset-v3_filtered/"
             ]
         },

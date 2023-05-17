@@ -43,9 +43,9 @@ if args.model not in ["reference", "fucci", "total"]:
 config = {
     "imsize": 256,
     "nf": 128,
-    "batch_size": 8,
+    "batch_size": 16,
     "num_devices": 8,
-    "num_workers": 16,
+    "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
     "lr": 1e-4,
     "min_delta": 1e3,
@@ -121,8 +121,8 @@ trainer = pl.Trainer(
     default_root_dir=lightning_dir,
     accelerator="gpu" if not args.cpu else "cpu",
     devices=config["num_devices"] if not args.cpu else "auto",
-    limit_train_batches=0.1 if args.dev else 1.0,
-    limit_val_batches=0.1 if args.dev else 1.0,
+    limit_train_batches=0.1 if args.dev else None,
+    limit_val_batches=0.1 if args.dev else None,
     # fast_dev_run=10,
     # detect_anomaly=True,
     # num_sanity_val_steps=2,
@@ -150,6 +150,6 @@ trainer = pl.Trainer(
     accelerator="gpu" if not args.cpu else "cpu",
     devices=1,
     num_nodes=1,
-    limit_test_batches=0.1 if args.dev else 1.0,
+    limit_test_batches=0.1 if args.dev else None,
 )
 trainer.test(model, dm)
