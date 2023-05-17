@@ -248,7 +248,7 @@ class FUCCIDatasetInMemory(FUCCIDataset):
 
 class ReferenceChannelDatasetInMemory(FUCCIDatasetInMemory):
     def __init__(self, *args, **kwargs):
-        super(FUCCIDatasetInMemory, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.dataset_images = self.dataset_images[..., :2, :, :]
 
     def channel_colors(self):
@@ -257,9 +257,6 @@ class ReferenceChannelDatasetInMemory(FUCCIDatasetInMemory):
         else:
             return self.cmap
         
-    def temp_print(self):
-        print("hey!")
-
     def get_channel_names(self):
         return self.channels[:2]
     
