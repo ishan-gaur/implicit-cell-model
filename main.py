@@ -43,7 +43,7 @@ if args.model not in ["reference", "fucci", "total"]:
 config = {
     "imsize": 256,
     "nf": 128,
-    "batch_size": 24,
+    "batch_size": 8,
     "num_devices": 8,
     "num_workers": 16,
     "split": (0.64, 0.16, 0.2),
