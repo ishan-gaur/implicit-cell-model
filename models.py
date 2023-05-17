@@ -3,6 +3,14 @@ from torch.autograd import Variable
 from torch import nn
 import lightning.pytorch as pl
 
+class VQEncoder(nn.Module):
+    def __init__(self):
+        raise NotImplementedError
+
+class VQDecoder(nn.Module):
+    def __init__(self):
+        raise NotImplementedError
+
 class Encoder(nn.Module):
     def __init__(self, nc=1, nf=128, ch_mult=(1, 2, 4, 8, 8, 8), imsize=256, latent_dim=512):
         """
