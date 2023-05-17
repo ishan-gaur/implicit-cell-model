@@ -12,4 +12,5 @@ dependencies:
   - kornia
   - imageio
   - microfilm
+  - tensorboardx
 prefix: /home/ishang/miniconda3/envs/implicit
