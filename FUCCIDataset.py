@@ -1,5 +1,4 @@
 import os
-# import sys
 import argparse
 from pathlib import Path
 import torch
@@ -14,7 +13,6 @@ import time
 import kornia.augmentation as K
 import kornia.geometry.transform as T
 from kornia.utils import image_to_tensor
-# from bisect import bisect_right
 
 def cell_masks(dapi, gamma_tubulin, suppress_warnings=True):
     if version.parse(torch.__version__) >= version.parse("1.10.0"):
@@ -160,8 +158,6 @@ class FUCCIDataset(Dataset):
         return self.len
 
     def __dataset_to_exp_index(self, idx):
-        # experiment_entry = next(filter(lambda experiment: experiment[0] <= idx, self.dataset))
-        # exp_index = bisect_right(self.dataset, idx, key=lambda x: x[0])
         exp_index = 0
         while exp_index < len(self.dataset) and self.dataset[exp_index][0] <= idx:
             exp_index += 1
@@ -206,7 +202,7 @@ class FUCCIDataset(Dataset):
 
     def get_channel_names(self):
         return self.channels
-
+        
 
 class ReferenceChannelDataset(FUCCIDataset):
     def __getitem__(self, idx):
@@ -221,8 +217,54 @@ class ReferenceChannelDataset(FUCCIDataset):
 
     def get_channel_names(self):
         return self.channels[:2]
+     
 
 class FUCCIChannelDataset(FUCCIDataset):
+    def __getitem__(self, idx):
+        full_image = super().__getitem__(idx)
+        return full_image[..., 2:, :, :]
+
+    def channel_colors(self):
+        if len(self.cmap) > 2:
+            return self.cmap[2:]
+        else:
+            return self.cmap
+
+    def get_channel_names(self):
+        return self.channels[2:]
+
+
+class FUCCIDatasetInMemory(FUCCIDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.dataset_images = []
+        for i in range(self.len):
+            self.dataset_images.append(super().__getitem__(i).numpy())
+        self.dataset_images = np.asarray(self.dataset_images)
+    
+    def __getitem__(self, idx):
+        return self.dataset_images[idx]
+
+
+class ReferenceChannelDatasetInMemory(FUCCIDatasetInMemory):
+    def __init__(self, *args, **kwargs):
+        super(FUCCIDatasetInMemory, self).__init__(*args, **kwargs)
+        self.dataset_images = self.dataset_images[..., :2, :, :]
+
+    def channel_colors(self):
+        if len(self.cmap) > 2:
+            return self.cmap[:2]
+        else:
+            return self.cmap
+        
+    def temp_print(self):
+        print("hey!")
+
+    def get_channel_names(self):
+        return self.channels[:2]
+    
+
+class FUCCIChannelDatasetInMemory(FUCCIDatasetInMemory):
     def __getitem__(self, idx):
         full_image = super().__getitem__(idx)
         return full_image[..., 2:, :, :]

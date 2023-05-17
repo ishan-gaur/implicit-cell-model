@@ -16,10 +16,11 @@ import numpy as np
 import wandb
 
 from FUCCIDataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
+from FUCCIDataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, FUCCIChannelDatasetInMemory
 from models import Encoder, Decoder
 
 class FUCCIDataModule(pl.LightningDataModule):
-    def __init__(self, data_dir, dataset, batch_size, num_workers, imsize=1024, split=(0.64, 0.16, 0.2)):
+    def __init__(self, data_dir, dataset, batch_size, num_workers, imsize=1024, split=(0.64, 0.16, 0.2), in_memory=True):
         super().__init__()
         if not isinstance(data_dir, Path):
             data_dir = Path(data_dir)
@@ -27,12 +28,20 @@ class FUCCIDataModule(pl.LightningDataModule):
 
         self.imsize = imsize
 
-        if dataset == "total":
-            self.dataset = FUCCIDataset(self.data_dir, imsize=self.imsize)
-        if dataset == "reference":
-            self.dataset = ReferenceChannelDataset(self.data_dir, imsize=self.imsize)
-        if dataset == "fucci":
-            self.dataset = FUCCIChannelDataset(self.data_dir, imsize=self.imsize)
+        if not in_memory:
+            if dataset == "total":
+                self.dataset = FUCCIDataset(self.data_dir, imsize=self.imsize)
+            if dataset == "reference":
+                self.dataset = ReferenceChannelDataset(self.data_dir, imsize=self.imsize)
+            if dataset == "fucci":
+                self.dataset = FUCCIChannelDataset(self.data_dir, imsize=self.imsize)
+        else:
+            if dataset == "total":
+                self.dataset = FUCCIDatasetInMemory(self.data_dir, imsize=self.imsize)
+            if dataset == "reference":
+                self.dataset = ReferenceChannelDatasetInMemory(self.data_dir, imsize=self.imsize)
+            if dataset == "fucci":
+                self.dataset = FUCCIChannelDatasetInMemory(self.data_dir, imsize=self.imsize)
 
         self.split = split
         if len(self.split) != 3:
@@ -42,14 +51,17 @@ class FUCCIDataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
 
+    def _shared_dataloader(self, dataset):
+        return DataLoader(dataset, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+
     def train_dataloader(self):
-        return DataLoader(self.data_train, batch_size=self.batch_size, num_workers=self.num_workers)
+        return self._shared_dataloader(self.data_train)
 
     def val_dataloader(self):
-        return DataLoader(self.data_val, batch_size=self.batch_size, num_workers=self.num_workers)
+        return self._shared_dataloader(self.data_val)
 
     def test_dataloader(self):
-         return DataLoader(self.data_test, batch_size=self.batch_size, num_workers=self.num_workers)
+        return self._shared_dataloader(self.data_test)
 
     def get_channels(self):
         return self.dataset.get_channel_names()
