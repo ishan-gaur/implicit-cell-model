@@ -41,15 +41,17 @@ if args.model not in ["reference", "fucci", "total"]:
 # Experiment parameters and logging
 ##########################################################################################
 config = {
-    "imsize": 64,
-    "batch_size": 64,
-    "num_workers": 8,
+    "imsize": 256,
+    "nf": 128,
+    "batch_size": 24,
+    "num_devices": 8,
+    "num_workers": 16,
     "split": (0.64, 0.16, 0.2),
     "lr": 1e-4,
     "min_delta": 1e3,
     "patience": 3,
     "stopping_patience": 6,
-    "nf": 128,
+    "epochs": args.epochs
 }
 
 fucci_path = Path(args.data)
@@ -109,7 +111,8 @@ model = AutoEncoder(
     nf=config["nf"],
     imsize=config["imsize"],
     lr=config["lr"],
-    patience=config["patience"]
+    patience=config["patience"],
+    channels=dm.get_channels()
 )
 
 print_with_time("Setting up trainer...")
@@ -117,16 +120,16 @@ print_with_time("Setting up trainer...")
 trainer = pl.Trainer(
     default_root_dir=lightning_dir,
     accelerator="gpu" if not args.cpu else "cpu",
-    devices=8 if not args.cpu else "auto",
+    devices=config["num_devices"] if not args.cpu else "auto",
     limit_train_batches=0.1 if args.dev else 1.0,
     limit_val_batches=0.1 if args.dev else 1.0,
     # fast_dev_run=10,
     # detect_anomaly=True,
     # num_sanity_val_steps=2,
     # overfit_batches=5,
-    # log_every_n_steps=10,
+    # log_every_n_steps=1,
     logger=wandb_logger,
-    max_epochs=args.epochs,
+    max_epochs=config["epochs"],
     callbacks=[
         checkpoint_callback,
         stopping_callback,

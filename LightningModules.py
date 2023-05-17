@@ -40,7 +40,7 @@ class FUCCIDataModule(pl.LightningDataModule):
         self.data_train, self.data_val, self.data_test = random_split(self.dataset, self.split)
         
         self.batch_size = batch_size
-        self.num_workers = min(num_workers, self.batch_size)
+        self.num_workers = num_workers
 
     def train_dataloader(self):
         return DataLoader(self.data_train, batch_size=self.batch_size, num_workers=self.num_workers)
@@ -49,7 +49,10 @@ class FUCCIDataModule(pl.LightningDataModule):
         return DataLoader(self.data_val, batch_size=self.batch_size, num_workers=self.num_workers)
 
     def test_dataloader(self):
-        return DataLoader(self.data_test, batch_size=self.batch_size, num_workers=self.num_workers)
+         return DataLoader(self.data_test, batch_size=self.batch_size, num_workers=self.num_workers)
+
+    def get_channels(self):
+        return self.dataset.get_channel_names()
 
 
 class AutoEncoder(pl.LightningModule):
@@ -60,7 +63,9 @@ class AutoEncoder(pl.LightningModule):
         imsize=256,
         latent_dim=512,
         lr=1e-6,
-        patience=4):
+        patience=4,
+        channels=None
+    ):
 
         super().__init__()
         self.save_hyperparameters()
@@ -69,6 +74,7 @@ class AutoEncoder(pl.LightningModule):
         self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim)
         self.decoder = Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim)
         self.patience = patience
+        self.channels = channels
 
     def reparameterized_sampling(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -90,22 +96,49 @@ class AutoEncoder(pl.LightningModule):
         z = eps.mul(std).add_(mu)
         x_hat = self.decoder(z)
         loss = F.mse_loss(x_hat, x)
+        if self.channels is not None:
+            loss_dict = {}
+            loss_dict["total"] = loss
+            for i, channel in enumerate(self.channels):
+                loss_dict[channel] = F.mse_loss(x_hat[:,i,:,:], x[:,i,:,:])
+            loss = loss_dict
         return loss, x_hat
 
     def training_step(self, batch, batch_idx):
         loss, x_hat = self._shared_step(batch)
-        self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        return loss
+        if isinstance(loss, dict):
+            for channel in loss:
+                if channel == "total":
+                    self.log(f"train/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+                else:
+                    self.log(f"train/loss_{channel}", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        else:
+            self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        return loss['total']
 
     def validation_step(self, batch, batch_idx):
         loss, x_hat = self._shared_step(batch)
-        self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        return loss
+        if isinstance(loss, dict):
+            for channel in loss:
+                if channel == "total":
+                    self.log(f"val/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+                else:
+                    self.log(f"val/loss_{channel}", loss[channel], on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        else:
+            self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        return loss['total']
     
     def test_step(self, batch, batch_idx):
         loss, x_hat = self._shared_step(batch)
-        self.log("test/loss", loss, sync_dist=True)
-        return loss
+        if isinstance(loss, dict):
+            for channel in loss:
+                if channel == "total":
+                    self.log(f"test/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+                else:
+                    self.log(f"test/loss_{channel}", loss[channel], on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        else:
+            self.log("test/loss", loss, sync_dist=True)
+        return loss['total']
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
@@ -180,9 +213,6 @@ class ReconstructionVisualization(Callback):
         return image_list
 
     def make_reconstruction_grid(input_imgs, reconst_imgs):
-        # normalize each image separately to [-1, 1]
-        # input_imgs = ReconstructionVisualization.image_list_normalization(input_imgs)
-        # reconst_imgs = ReconstructionVisualization.image_list_normalization(reconst_imgs)
         imgs = torch.stack([input_imgs, reconst_imgs], dim=1).flatten(0, 1)
         grid = make_grid(imgs, nrow=2, normalize=True, range=(-1, 1))
         return grid

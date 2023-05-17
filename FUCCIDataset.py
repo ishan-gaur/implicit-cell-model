@@ -204,6 +204,9 @@ class FUCCIDataset(Dataset):
     def channel_colors(self):
         return self.cmap
 
+    def get_channel_names(self):
+        return self.channels
+
 
 class ReferenceChannelDataset(FUCCIDataset):
     def __getitem__(self, idx):
@@ -216,6 +219,9 @@ class ReferenceChannelDataset(FUCCIDataset):
         else:
             return self.cmap
 
+    def get_channel_names(self):
+        return self.channels[:2]
+
 class FUCCIChannelDataset(FUCCIDataset):
     def __getitem__(self, idx):
         full_image = super().__getitem__(idx)
@@ -226,6 +232,9 @@ class FUCCIChannelDataset(FUCCIDataset):
             return self.cmap[2:]
         else:
             return self.cmap
+
+    def get_channel_names(self):
+        return self.channels[2:]
 
 
 def clean_dir(data_dir):
