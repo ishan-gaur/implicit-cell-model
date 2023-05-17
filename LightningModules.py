@@ -9,6 +9,7 @@ from torchvision.utils import make_grid
 
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import Callback
+from torchmetrics import MultiScaleStructuralSimilarityIndexMeasure
 
 from kornia import tensor_to_image
 from microfilm.colorify import multichannel_to_rgb
@@ -104,41 +105,39 @@ class AutoEncoder(pl.LightningModule):
             loss = loss_dict
         return loss, x_hat
 
-    def training_step(self, batch, batch_idx):
-        loss, x_hat = self._shared_step(batch)
+    def _MSE_loss_logging(self, loss, trainer_state):
         if isinstance(loss, dict):
             for channel in loss:
                 if channel == "total":
-                    self.log(f"train/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+                    self.log(f"{trainer_state}/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
                 else:
-                    self.log(f"train/loss_{channel}", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+                    self.log(f"{trainer_state}/loss_{channel}", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         else:
-            self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        return loss['total']
+            self.log(f"{trainer_state}/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+
+    def _MSSIM_logging(self, x, x_hat, trainer_state):
+        mssim = MultiScaleStructuralSimilarityIndexMeasure()
+        mssim_loss = mssim(x_hat, x)
+        self.log(f"{trainer_state}/ssim", mssim_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+
+    def _shared_logging(self, loss, x_hat, batch, trainer_state):
+        self._MSE_loss_logging(loss, trainer_state)
+        self._MSSIM_logging(batch, x_hat, trainer_state)
+
+    def training_step(self, batch, batch_idx):
+        loss, x_hat = self._shared_step(batch)
+        self._shared_logging(loss, x_hat, batch, "train")
+        return loss['total'] if isinstance(loss, dict) else loss
 
     def validation_step(self, batch, batch_idx):
         loss, x_hat = self._shared_step(batch)
-        if isinstance(loss, dict):
-            for channel in loss:
-                if channel == "total":
-                    self.log(f"val/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-                else:
-                    self.log(f"val/loss_{channel}", loss[channel], on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        else:
-            self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        return loss['total']
+        self._shared_logging(loss, x_hat, batch, "val")
+        return loss['total'] if isinstance(loss, dict) else loss
     
     def test_step(self, batch, batch_idx):
         loss, x_hat = self._shared_step(batch)
-        if isinstance(loss, dict):
-            for channel in loss:
-                if channel == "total":
-                    self.log(f"test/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-                else:
-                    self.log(f"test/loss_{channel}", loss[channel], on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        else:
-            self.log("test/loss", loss, sync_dist=True)
-        return loss['total']
+        self._shared_logging(loss, x_hat, batch, "test")
+        return loss['total'] if isinstance(loss, dict) else loss
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
