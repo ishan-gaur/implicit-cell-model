@@ -90,7 +90,7 @@ class FUCCIDataset(Dataset):
         if rebuild:
             clean_dir(self.data_dir)
 
-        im_shape = iio.imread(next(next(next(self.data_dir.iterdir()).iterdir()).iterdir())).shape
+        im_shape = [2048, 2048] # TODO: make this not hard-coded but without starting processing first
         if im_shape[0] < imsize:
             raise ValueError(f"imsize ({imsize}) must be less than or equal to the image height ({im_shape[0]})")
         if im_shape[1] < imsize:
@@ -109,10 +109,12 @@ class FUCCIDataset(Dataset):
             for experiment in split.iterdir():
                 if not experiment.is_dir():
                     raise ValueError(f"Experiment {experiment} is not a directory")
+
                 if experiment / "mask.png" not in experiment.iterdir():
                     image = self.__image_from_experiment(experiment)
                     mask = cell_masks(dapi=[image[:, :, 0]], gamma_tubulin=[image[:, :, 1]])[0]
                     iio.imwrite(experiment / "mask.png", mask)
+
                 if experiment / "com.npy" not in experiment.iterdir():
                     num_cells = np.max(iio.imread(experiment / "mask.png"))
                     com = np.zeros((num_cells, 2))
@@ -121,7 +123,16 @@ class FUCCIDataset(Dataset):
                     np.save(experiment / "com", com)
 
                 self.dataset.append((cell_index, experiment))
-                cell_index += np.max(iio.imread(experiment / "mask.png"))
+                num_cells = np.max(iio.imread(experiment / "mask.png"))
+
+                if experiment / "cells.npy" not in experiment.iterdir():
+                    cell_images = []
+                    for cell in range(num_cells):
+                        cell_images.append(self.__get_single_item(cell_index + cell).numpy())
+                    cell_images = np.array(cell_images)
+                    np.save(experiment / "cells", cell_images)  
+
+                cell_index += np.max(num_cells)
 
                 exp_count += 1
                 if self.verbose and exp_count % 10 == 0:
@@ -129,6 +140,8 @@ class FUCCIDataset(Dataset):
         
         self.channels = ["DAPI", "gamma-tubulin", "Geminin", "CDT1"]
         self.len = cell_index
+        self.num_exp = exp_count
+
     
     def __image_from_experiment(self, experiment_dir):
         dapi_names = ["dapi", "nuclei", "nucleus", "dna", "nuclear"]
@@ -167,20 +180,24 @@ class FUCCIDataset(Dataset):
 
     def __get_single_item(self, idx):
         experiment_entry, cell_index = self.__dataset_to_exp_index(idx)
-        image = self.__image_from_experiment(experiment_entry[1])
-        mask = (iio.imread(experiment_entry[1] / "mask.png") == 1 + cell_index)
-        cell_image = image * np.expand_dims(mask, axis=2)
-        com = np.load(experiment_entry[1] / "com.npy")[cell_index]
-        offset = (np.asarray(cell_image.shape[:-1]) / 2 - com).astype(int)
-        centered = np.roll(cell_image, offset, axis=(0, 1))
-        centered = image_to_tensor(centered, keepdim=True)
-        cropped = K.CenterCrop(centered.shape[1] // 2, keepdim=True)(centered)
-        img_small = T.resize(cropped, self.imsize)
-        return img_small
-        # return cropped
-        # centered = np.moveaxis(centered, -1, 0)
-        # return centered
-
+        if experiment_entry[1] / "cells.npy" not in experiment_entry[1].iterdir():
+            image = self.__image_from_experiment(experiment_entry[1])
+            mask = (iio.imread(experiment_entry[1] / "mask.png") == 1 + cell_index)
+            cell_image = image * np.expand_dims(mask, axis=2)
+            com = np.load(experiment_entry[1] / "com.npy")[cell_index]
+            offset = (np.asarray(cell_image.shape[:-1]) / 2 - com).astype(int)
+            centered = np.roll(cell_image, offset, axis=(0, 1))
+            centered = image_to_tensor(centered, keepdim=True)
+            cropped = K.CenterCrop(centered.shape[1] // 2, keepdim=True)(centered)
+            img_small = T.resize(cropped, self.imsize)
+            return img_small
+            # return cropped
+            # centered = np.moveaxis(centered, -1, 0)
+            # return centered
+        else:
+            cell_images = np.load(experiment_entry[1] / "cells.npy")
+            return image_to_tensor(cell_images[cell_index], keepdim=True)
+    
     def __getitem__(self, idx):
         if isinstance(idx, int):
             return self.__get_single_item(idx)
@@ -191,6 +208,13 @@ class FUCCIDataset(Dataset):
         else:
             raise TypeError(f"Invalid argument type {type(idx)} must be int, slice, or list of ints.") 
     
+    def get_experiment_cells(self, idx):
+        if idx < 0 or idx > self.num_exp:
+            raise IndexError(f"Index {idx} out of range for dataset of length {self.len}")
+        cell_images = np.load(self.dataset[idx][1] / "cells.npy")
+        return cell_images
+        
+
     def get_original_image(self, idx):
         return self.__image_from_experiment(self.dataset[idx][1])
 
@@ -238,9 +262,9 @@ class FUCCIDatasetInMemory(FUCCIDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.dataset_images = []
-        for i in range(self.len):
-            self.dataset_images.append(super().__getitem__(i).numpy())
-        self.dataset_images = np.asarray(self.dataset_images)
+        for i in range(self.num_exp):
+            self.dataset_images.append(super().get_experiment_cells(i))
+        self.dataset_images = np.concatenate(self.dataset_images, axis=0)
     
     def __getitem__(self, idx):
         return self.dataset_images[idx]
@@ -279,14 +303,12 @@ class FUCCIChannelDatasetInMemory(FUCCIDatasetInMemory):
 def clean_dir(data_dir):
     if not isinstance(data_dir, Path):
         data_dir = Path(data_dir)
+    remove = lambda x, dir: os.remove(dir / x) if dir / x in dir.iterdir() else None
     for split in data_dir.iterdir():
         for experiment in split.iterdir():
-            # remove mask.png if it exists
-            if experiment / "mask.png" in experiment.iterdir():
-                os.remove(experiment / "mask.png")
-
-            if experiment / "com.npy" in experiment.iterdir():
-                os.remove(experiment / "com.npy")
+            remove("mask.png", experiment)
+            remove("com.npy", experiment)
+            remove("cells.npy", experiment)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FUCCI Dataset Tool",
