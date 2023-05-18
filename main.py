@@ -45,7 +45,7 @@ config = {
     "nf": 128,
     "batch_size": 16,
     "num_devices": 8,
-    "num_workers": 1,
+    "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
     "lr": 1e-4,
     "min_delta": 1e3,

@@ -265,6 +265,7 @@ class FUCCIDatasetInMemory(FUCCIDataset):
         for i in range(self.num_exp):
             self.dataset_images.append(super().get_experiment_cells(i))
         self.dataset_images = np.concatenate(self.dataset_images, axis=0)
+        self.dataset_images = torch.Tensor(self.dataset_images)
     
     def __getitem__(self, idx):
         return self.dataset_images[idx]
@@ -286,9 +287,9 @@ class ReferenceChannelDatasetInMemory(FUCCIDatasetInMemory):
     
 
 class FUCCIChannelDatasetInMemory(FUCCIDatasetInMemory):
-    def __getitem__(self, idx):
-        full_image = super().__getitem__(idx)
-        return full_image[..., 2:, :, :]
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.dataset_images = self.dataset_images[..., 2:, :, :]
 
     def channel_colors(self):
         if len(self.cmap) > 2:
