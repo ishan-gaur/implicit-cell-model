@@ -180,23 +180,22 @@ class FUCCIDataset(Dataset):
 
     def __get_single_item(self, idx):
         experiment_entry, cell_index = self.__dataset_to_exp_index(idx)
-        if experiment_entry[1] / "cells.npy" not in experiment_entry[1].iterdir():
-            image = self.__image_from_experiment(experiment_entry[1])
-            mask = (iio.imread(experiment_entry[1] / "mask.png") == 1 + cell_index)
-            cell_image = image * np.expand_dims(mask, axis=2)
-            com = np.load(experiment_entry[1] / "com.npy")[cell_index]
-            offset = (np.asarray(cell_image.shape[:-1]) / 2 - com).astype(int)
-            centered = np.roll(cell_image, offset, axis=(0, 1))
-            centered = image_to_tensor(centered, keepdim=True)
-            cropped = K.CenterCrop(centered.shape[1] // 2, keepdim=True)(centered)
-            img_small = T.resize(cropped, self.imsize)
-            return img_small
-            # return cropped
-            # centered = np.moveaxis(centered, -1, 0)
-            # return centered
-        else:
-            cell_images = np.load(experiment_entry[1] / "cells.npy")
-            return image_to_tensor(cell_images[cell_index], keepdim=True)
+        image = self.__image_from_experiment(experiment_entry[1])
+        mask = (iio.imread(experiment_entry[1] / "mask.png") == 1 + cell_index)
+        cell_image = image * np.expand_dims(mask, axis=2)
+        com = np.load(experiment_entry[1] / "com.npy")[cell_index]
+        offset = (np.asarray(cell_image.shape[:-1]) / 2 - com).astype(int)
+        centered = np.roll(cell_image, offset, axis=(0, 1))
+        centered = image_to_tensor(centered, keepdim=True)
+        cropped = K.CenterCrop(centered.shape[1] // 2, keepdim=True)(centered)
+        img_small = T.resize(cropped, self.imsize)
+        return img_small
+        # return cropped
+        # centered = np.moveaxis(centered, -1, 0)
+        # return centered
+        # else:
+        #     cell_images = np.load(experiment_entry[1] / "cells.npy")
+        #     return image_to_tensor(cell_images[cell_index], keepdim=True)
     
     def __getitem__(self, idx):
         if isinstance(idx, int):

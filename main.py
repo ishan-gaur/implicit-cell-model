@@ -43,7 +43,7 @@ if args.model not in ["reference", "fucci", "total"]:
 config = {
     "imsize": 256,
     "nf": 128,
-    "batch_size": 16,
+    "batch_size": 24,
     "num_devices": 8,
     "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
@@ -69,7 +69,7 @@ def print_with_time(msg):
 
 wandb_logger = WandbLogger(
     project=project_name,
-    # log_model=True,
+    log_model=True,
     save_dir=wandb_dir,
     config=config
 )
