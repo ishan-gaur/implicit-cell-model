@@ -91,10 +91,10 @@ class FUCCIDataset(Dataset):
             clean_dir(self.data_dir)
 
         im_shape = [2048, 2048] # TODO: make this not hard-coded but without starting processing first
-        if im_shape[0] < imsize:
-            raise ValueError(f"imsize ({imsize}) must be less than or equal to the image height ({im_shape[0]})")
-        if im_shape[1] < imsize:
-            raise ValueError(f"imsize ({imsize}) must be less than or equal to the image width ({im_shape[1]})")
+        if im_shape[0] // 2 < imsize:
+            raise ValueError(f"imsize ({imsize}) must be less than or equal to the cropped image height ({im_shape[0]})")
+        if im_shape[1] // 2 < imsize:
+            raise ValueError(f"imsize ({imsize}) must be less than or equal to the cropped image width ({im_shape[1]})")
         
         self.imsize = imsize
 
@@ -125,12 +125,12 @@ class FUCCIDataset(Dataset):
                 self.dataset.append((cell_index, experiment))
                 num_cells = np.max(iio.imread(experiment / "mask.png"))
 
-                if experiment / "cells.npy" not in experiment.iterdir():
+                if experiment / f"cells_{self.imsize}.npy" not in experiment.iterdir():
                     cell_images = []
                     for cell in range(num_cells):
-                        cell_images.append(self.__get_single_item(cell_index + cell).numpy())
+                        cell_images.append(self.__get_single_cell_image(cell_index + cell).numpy())
                     cell_images = np.array(cell_images)
-                    np.save(experiment / "cells", cell_images)  
+                    np.save(experiment / f"cells_{self.imsize}", cell_images)  
 
                 cell_index += np.max(num_cells)
 
@@ -178,39 +178,53 @@ class FUCCIDataset(Dataset):
         cell_index = idx - experiment_entry[0]
         return experiment_entry, cell_index
 
-    def __get_single_item(self, idx):
+    def __get_single_cell_image(self, idx):
         experiment_entry, cell_index = self.__dataset_to_exp_index(idx)
         image = self.__image_from_experiment(experiment_entry[1])
+
+        # center on cell
         mask = (iio.imread(experiment_entry[1] / "mask.png") == 1 + cell_index)
         cell_image = image * np.expand_dims(mask, axis=2)
         com = np.load(experiment_entry[1] / "com.npy")[cell_index]
         offset = (np.asarray(cell_image.shape[:-1]) / 2 - com).astype(int)
         centered = np.roll(cell_image, offset, axis=(0, 1))
         centered = image_to_tensor(centered, keepdim=True)
-        cropped = K.CenterCrop(centered.shape[1] // 2, keepdim=True)(centered)
-        img_small = T.resize(cropped, self.imsize)
-        return img_small
+
+        # crop and resize
+        cropped_size = centered.shape[1] // 2
+        cropped = K.CenterCrop(cropped_size, keepdim=True)(centered)
+        if self.imsize < cropped_size:
+            cell_image = T.resize(cropped, self.imsize)
+        else:
+            cell_image = cropped
+
+        # normalize to -1 to 1
+        # the data range is that of a 16 bit float image
+        cell_image = cell_image / torch.finfo(torch.float16).max * 2 - 1
+        cell_image = torch.clamp(cell_image, -1, 1)
+
+        return cell_image
         # return cropped
         # centered = np.moveaxis(centered, -1, 0)
         # return centered
         # else:
-        #     cell_images = np.load(experiment_entry[1] / "cells.npy")
+        #     cell_images = np.load(experiment_entry[1] / f"cells_{self.imsize}.npy")
         #     return image_to_tensor(cell_images[cell_index], keepdim=True)
     
     def __getitem__(self, idx):
         if isinstance(idx, int):
-            return self.__get_single_item(idx)
+            return self.__get_single_cell_image(idx)
         elif isinstance(idx, slice):
-            return torch.stack([self.__get_single_item(i) for i in range(*idx.indices(self.len))])
+            return torch.stack([self.__get_single_cell_image(i) for i in range(*idx.indices(self.len))])
         elif isinstance(idx, list):
-            return torch.stack([self.__get_single_item(i) for i in idx])
+            return torch.stack([self.__get_single_cell_image(i) for i in idx])
         else:
             raise TypeError(f"Invalid argument type {type(idx)} must be int, slice, or list of ints.") 
     
     def get_experiment_cells(self, idx):
         if idx < 0 or idx > self.num_exp:
             raise IndexError(f"Index {idx} out of range for dataset of length {self.len}")
-        cell_images = np.load(self.dataset[idx][1] / "cells.npy")
+        cell_images = np.load(self.dataset[idx][1] / f"cells_{self.imsize}.npy")
         return cell_images
         
 
@@ -308,7 +322,25 @@ def clean_dir(data_dir):
         for experiment in split.iterdir():
             remove("mask.png", experiment)
             remove("com.npy", experiment)
-            remove("cells.npy", experiment)
+            for file in experiment.iterdir():
+                if file.name.startswith("cells"):
+                    os.remove(file)
+
+def remove_files(data_dir, file_name):
+    if not isinstance(data_dir, Path):
+        data_dir = Path(data_dir)
+    for split in data_dir.iterdir():
+        for experiment in split.iterdir():
+            if experiment / file_name in experiment.iterdir():
+                os.remove(experiment / file_name)
+
+def rename_files(data_dir, original_name, new_name):
+    if not isinstance(data_dir, Path):
+        data_dir = Path(data_dir)
+    for split in data_dir.iterdir():
+        for experiment in split.iterdir():
+            if experiment / original_name in experiment.iterdir():
+                os.rename(experiment / original_name, experiment / new_name)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FUCCI Dataset Tool",
@@ -316,12 +348,35 @@ if __name__ == "__main__":
     parser.add_argument("-v", "--verbose", action="store_true", help="print verbose output")
     parser.add_argument("-c", "--clean", action="store_true", help="remove all mask files")
     parser.add_argument("-d", "--data", required=True, help="path to dataset")
+    parser.add_argument("-r", "--rename", action="store_true", help="rename files")
+    parser.add_argument("-x", "--remove", action="store_true", help="remove files")
+    parser.add_argument("-o", "--old", help="old file name inside experiment")
+    parser.add_argument("-n", "--new", help="new file name inside experiment")
+
     args = parser.parse_args()
     dataset_location = Path(args.data)
 
     if args.clean:
         clean_dir(dataset_location)
         exit(0)
+    
+    if args.rename:
+        if args.old is None or args.new is None:
+            print("Must specify both old and new file names")
+            exit(1)
+        rename_files(dataset_location, args.old, args.new)
+        exit(0)
+
+    if args.remove:
+        if args.old is None:
+            print("Must specify old file name")
+            exit(1)
+        remove_files(dataset_location, args.old)
+        exit(0)
+
+    if args.old is not None or args.new is not None:
+        print("Cannot specify old or new file name without rename flag")
+        exit(1)
 
     dataset = FUCCIDataset(dataset_location, verbose=args.verbose)
     print(f"Dataset channels: {dataset.channels}")
