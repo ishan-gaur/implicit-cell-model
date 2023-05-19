@@ -115,6 +115,7 @@ class FUCCIDataset(Dataset):
                     mask = cell_masks(dapi=[image[:, :, 0]], gamma_tubulin=[image[:, :, 1]])[0]
                     iio.imwrite(experiment / "mask.png", mask)
 
+                # center of mass--to center the cells
                 if experiment / "com.npy" not in experiment.iterdir():
                     num_cells = np.max(iio.imread(experiment / "mask.png"))
                     com = np.zeros((num_cells, 2))
@@ -125,6 +126,7 @@ class FUCCIDataset(Dataset):
                 self.dataset.append((cell_index, experiment))
                 num_cells = np.max(iio.imread(experiment / "mask.png"))
 
+                # cache of cell images
                 if experiment / f"cells_{self.imsize}.npy" not in experiment.iterdir():
                     cell_images = []
                     for cell in range(num_cells):
@@ -204,12 +206,6 @@ class FUCCIDataset(Dataset):
         cell_image = torch.clamp(cell_image, -1, 1)
 
         return cell_image
-        # return cropped
-        # centered = np.moveaxis(centered, -1, 0)
-        # return centered
-        # else:
-        #     cell_images = np.load(experiment_entry[1] / f"cells_{self.imsize}.npy")
-        #     return image_to_tensor(cell_images[cell_index], keepdim=True)
     
     def __getitem__(self, idx):
         if isinstance(idx, int):
@@ -342,6 +338,27 @@ def rename_files(data_dir, original_name, new_name):
             if experiment / original_name in experiment.iterdir():
                 os.rename(experiment / original_name, experiment / new_name)
 
+def normalize_cached_cells(data_dir, cell_file, new_file=None):
+    if not isinstance(data_dir, Path):
+        data_dir = Path(data_dir)
+    if new_file is None:
+        new_file = cell_file
+    count = 0
+    total = len(list(data_dir.glob("**/" + cell_file)))
+    for split in data_dir.iterdir():
+        for experiment in split.iterdir():
+            if experiment / cell_file in experiment.iterdir():
+                cells = np.load(experiment / cell_file)
+                cells = cells.astype(np.float32)
+                # cells are between 0 and max of float16
+                cells = (cells / np.finfo(np.float16).max * 2) - 1
+                cells = cells.astype(np.float32)
+                cells = np.clip(cells, -1, 1)
+                np.save(experiment / new_file.split(".")[0], cells)
+                count += 1
+            if count % 100 == 0:
+                print(f"Normalized {count}/{total} cells", end="\r")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FUCCI Dataset Tool",
                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -350,8 +367,9 @@ if __name__ == "__main__":
     parser.add_argument("-d", "--data", required=True, help="path to dataset")
     parser.add_argument("-r", "--rename", action="store_true", help="rename files")
     parser.add_argument("-x", "--remove", action="store_true", help="remove files")
-    parser.add_argument("-o", "--old", help="old file name inside experiment")
+    parser.add_argument("-t", "--target", help="target file name inside experiment")
     parser.add_argument("-n", "--new", help="new file name inside experiment")
+    parser.add_argument("--normalize", action="store_true", help="normalize cached cells")
 
     args = parser.parse_args()
     dataset_location = Path(args.data)
@@ -361,21 +379,28 @@ if __name__ == "__main__":
         exit(0)
     
     if args.rename:
-        if args.old is None or args.new is None:
-            print("Must specify both old and new file names")
+        if args.target is None or args.new is None:
+            print("Must specify both target and new file names")
             exit(1)
-        rename_files(dataset_location, args.old, args.new)
+        rename_files(dataset_location, args.target, args.new)
         exit(0)
 
     if args.remove:
-        if args.old is None:
-            print("Must specify old file name")
+        if args.target is None:
+            print("Must specify target file name")
             exit(1)
-        remove_files(dataset_location, args.old)
+        remove_files(dataset_location, args.target)
+        exit(0)
+    
+    if args.normalize:
+        if args.target is None:
+            print("Must specify target file name")
+            exit(1)
+        normalize_cached_cells(dataset_location, args.target, args.new)
         exit(0)
 
-    if args.old is not None or args.new is not None:
-        print("Cannot specify old or new file name without rename flag")
+    if args.target is not None or args.new is not None:
+        print("Cannot specify target or new file name without rename, remove, or normalize")
         exit(1)
 
     dataset = FUCCIDataset(dataset_location, verbose=args.verbose)
