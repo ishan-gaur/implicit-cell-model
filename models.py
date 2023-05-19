@@ -81,6 +81,7 @@ class Decoder(nn.Module):
         self.state_width = imsize // (2 ** len(ch_mult))
         state_area = self.state_width ** 2
         self.fc = nn.Sequential(
+            nn.BatchNorm1d(latent_dim),
             nn.Linear(latent_dim, self.nf * ch_mult[0] * state_area),
             nn.LeakyReLU(inplace=True)
         )
@@ -92,6 +93,7 @@ class Decoder(nn.Module):
             if depth == len(ch_mult):
                 self.layers.insert(0,
                     nn.Sequential(
+                        nn.BatchNorm2d(in_ch),
                         nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1),
                         nn.Sigmoid()
                     )
@@ -107,12 +109,25 @@ class Decoder(nn.Module):
             out_ch = in_ch
 
     def forward(self, z):
+        if torch.isnan(z).any():
+            print("nan detected in decoder")
+            print(f"input to fc")
         z = self.fc(z)
         z = z.view(-1, self.nf * self.ch_mult[0], self.state_width, self.state_width)
+        if torch.isnan(z).any():
+            print("nan detected in decoder")
+            print(f"fc output")
         for i in range(len(self.layers)):
             z = self.layers[i](z)
+            # print something if nan detected
+            if torch.isnan(z).any():
+                print("nan detected in decoder")
+                print(f"Layer {i}")
         # sigmoid is last, so rescale to -1, 1
         z = 2 * z - 1
+        if torch.isnan(z).any():
+            print("nan detected in decoder")
+            print("================")
         return z
 
 

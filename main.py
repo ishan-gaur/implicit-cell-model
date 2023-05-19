@@ -47,10 +47,10 @@ config = {
     "num_devices": 8,
     "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
-    "lr": 1e-4,
-    "min_delta": 1e3,
-    "patience": 3,
-    "stopping_patience": 6,
+    "lr": 1e-5,
+    "min_delta": 1e5,
+    "patience": 15,
+    "stopping_patience": 100,
     "epochs": args.epochs
 }
 
@@ -88,7 +88,8 @@ if config["patience"] > config["stopping_patience"]:
 stopping_callback = EarlyStopping(
     monitor="val/loss",
     min_delta=config["min_delta"],
-    mode="min"
+    mode="min",
+    patience=config["stopping_patience"]
 )
 
 ##########################################################################################

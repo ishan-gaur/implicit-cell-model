@@ -55,6 +55,7 @@ class FUCCIDataModule(pl.LightningDataModule):
         if num_workers is None:
             num_workers = self.num_workers
         return DataLoader(dataset, batch_size=self.batch_size, num_workers=num_workers, persistent_workers=True)
+        # return DataLoader(dataset, batch_size=self.batch_size, num_workers=num_workers)
 
     def train_dataloader(self):
         return self._shared_dataloader(self.data_train)
@@ -91,9 +92,20 @@ class AutoEncoder(pl.LightningModule):
         self.channels = channels
 
     def reparameterized_sampling(self, mu, logvar):
+        # check if mu or logvar is nan
+        if torch.isnan(mu).any():
+            print("mu is nan")
+        if torch.isnan(logvar).any():
+            print("logvar is nan")
         std = torch.exp(0.5 * logvar)
+        if torch.isnan(std).any():
+            print("std is nan")
         eps = torch.randn_like(mu)
+        if torch.isnan(eps).any():
+            print("eps is nan")
         sample = eps.mul(std).add_(mu)
+        if torch.isnan(sample).any():
+            print("sample is nan")
         return sample
 
     def forward(self, x):
@@ -119,22 +131,24 @@ class AutoEncoder(pl.LightningModule):
             loss = loss_dict
         # print debegging info if loss is nan
         if torch.isnan(loss_val):
-            print("x:", x)
-            print("max x:", torch.max(x))
-            print("min x:", torch.min(x))
-            print("x_hat:", x_hat)
-            print("max x_hat:", torch.max(x_hat))
-            print("min x_hat:", torch.min(x_hat))
-            print("mu:", mu)
-            print("logvar:", logvar)
-            print("std:", std)
-            print("eps:", eps)
-            print("z:", z)
+            # print("x:", x)
+            # print("max x:", torch.max(x))
+            # print("min x:", torch.min(x))
+            # print("x_hat:", x_hat)
+            # print("max x_hat:", torch.max(x_hat))
+            # print("min x_hat:", torch.min(x_hat))
+            # print("mu:", mu)
+            # print("logvar:", logvar)
+            # print("std:", std)
+            # print("eps:", eps)
+            # print("z:", z)
             # raise ValueError("loss is nan")
-            self.log("nan/x", x.mean(), on_step=True)
-            self.log("nan/mu_norm", torch.norm(mu), on_step=True)
-            self.log("nan/std_max", std.max(), on_step=True)
-            self.log("nan/z_norm", torch.norm(z), on_step=True)
+            self.log("val/nan_x", torch.sum(torch.isnan(x)), on_step=True, on_epoch=False, reduce_fx=torch.sum, sync_dist=False)
+            self.log("val/nan_x_hat", torch.sum(torch.isnan(x_hat)), on_step=True, on_epoch=False, reduce_fx=torch.sum, sync_dist=False)
+            self.log("val/nan_mu", torch.sum(torch.isnan(mu)), on_step=True, on_epoch=False, reduce_fx=torch.sum, sync_dist=False)
+            self.log("val/nan_std", torch.sum(torch.isnan(std)), on_step=True, on_epoch=False,reduce_fx=torch.sum, sync_dist=False)
+            self.log("val/nan_z", torch.sum(torch.isnan(z)), on_step=True, on_epoch=False, reduce_fx=torch.sum, sync_dist=False)
+            self.log("val/nan_test", 1, on_step=True, on_epoch=False, reduce_fx=torch.sum, sync_dist=False)
         return loss, x_hat
 
     def training_step(self, batch, batch_idx):
@@ -178,6 +192,7 @@ class AutoEncoder(pl.LightningModule):
         scheduler = ReduceLROnPlateau(
             optimizer,
             patience=self.patience,
+            threshold=0.01
         )
         return {
             "optimizer": optimizer,
