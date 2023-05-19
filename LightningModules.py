@@ -226,5 +226,5 @@ class ReconstructionVisualization(Callback):
 
     def make_reconstruction_grid(input_imgs, reconst_imgs):
         imgs = torch.stack([input_imgs, reconst_imgs], dim=1).flatten(0, 1)
-        grid = make_grid(imgs, nrow=2, normalize=True, range=(-1, 1))
+        grid = make_grid(imgs, nrow=2, normalize=True)
         return grid
