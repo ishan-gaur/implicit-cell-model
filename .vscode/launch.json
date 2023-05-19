@@ -72,12 +72,36 @@
             "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "args": [
-                "-d",
+                "-e",
+                "4",
+                "-c",
                 "-s",
                 "--model",
                 "reference",
                 "-f",
                 "${workspaceFolder}/FUCCI-dev-data/"
+                "-r",
+                "debugger"
+            ]
+        },
+        {
+            "name": "Training: Dev Full Data Reference Model",
+            "type": "python",
+            "python": "/home/ishang/miniconda3/envs/implicit/bin/python",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-e",
+                "4",
+                // "-c",
+                "-s",
+                "--model",
+                "reference",
+                "-f",
+                "/data/ishang/Fucci-dataset-v3_filtered/",
+                "-r",
+                "debugger"
             ]
         },
         {

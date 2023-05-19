@@ -51,8 +51,10 @@ class FUCCIDataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
 
-    def _shared_dataloader(self, dataset):
-        return DataLoader(dataset, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+    def _shared_dataloader(self, dataset, num_workers=None):
+        if num_workers is None:
+            num_workers = self.num_workers
+        return DataLoader(dataset, batch_size=self.batch_size, num_workers=num_workers, persistent_workers=True)
 
     def train_dataloader(self):
         return self._shared_dataloader(self.data_train)
@@ -61,7 +63,7 @@ class FUCCIDataModule(pl.LightningDataModule):
         return self._shared_dataloader(self.data_val)
 
     def test_dataloader(self):
-        return self._shared_dataloader(self.data_test)
+        return self._shared_dataloader(self.data_test, num_workers=self.num_workers)
 
     def get_channels(self):
         return self.dataset.get_channel_names()
@@ -108,12 +110,31 @@ class AutoEncoder(pl.LightningModule):
         z = eps.mul(std).add_(mu)
         x_hat = self.decoder(z)
         loss = F.mse_loss(x_hat, x)
+        loss_val = loss
         if self.channels is not None:
             loss_dict = {}
             loss_dict["total"] = loss
             for i, channel in enumerate(self.channels):
                 loss_dict[channel] = F.mse_loss(x_hat[:,i,:,:], x[:,i,:,:])
             loss = loss_dict
+        # print debegging info if loss is nan
+        if torch.isnan(loss_val):
+            print("x:", x)
+            print("max x:", torch.max(x))
+            print("min x:", torch.min(x))
+            print("x_hat:", x_hat)
+            print("max x_hat:", torch.max(x_hat))
+            print("min x_hat:", torch.min(x_hat))
+            print("mu:", mu)
+            print("logvar:", logvar)
+            print("std:", std)
+            print("eps:", eps)
+            print("z:", z)
+            # raise ValueError("loss is nan")
+            self.log("nan/x", x.mean(), on_step=True)
+            self.log("nan/mu_norm", torch.norm(mu), on_step=True)
+            self.log("nan/std_max", std.max(), on_step=True)
+            self.log("nan/z_norm", torch.norm(z), on_step=True)
         return loss, x_hat
 
     def training_step(self, batch, batch_idx):
@@ -168,10 +189,11 @@ class AutoEncoder(pl.LightningModule):
         scheduler.step(metric)
 
 class ReconstructionVisualization(Callback):
-    def __init__(self, num_images=8, every_n_epochs=1):
+    def __init__(self, num_images=8, every_n_epochs=1, channels=None):
         super().__init__()
         self.num_images = num_images
         self.every_n_epochs = every_n_epochs
+        self.channels = channels
 
     def __shared_reconstruction_step(self, input_imgs, pl_module, cmap):
         # Reconstruct images
@@ -185,37 +207,41 @@ class ReconstructionVisualization(Callback):
         grid = ReconstructionVisualization.make_reconstruction_grid(input_imgs, reconst_imgs)
         grid = tensor_to_image(grid)
         grid = np.moveaxis(grid, -1, 0)
-        grid, _, _, _ = multichannel_to_rgb(grid, cmaps=cmap)
-        return grid
+        rgb_grid, _, _, _ = multichannel_to_rgb(grid, cmaps=cmap)
+        return rgb_grid, grid
+
+    def __shared_logging_step(self, input_imgs, pl_module, cmap, trainer):
+        rgb_grid, grid = self.__shared_reconstruction_step(input_imgs, pl_module, cmap)
+        trainer.logger.experiment.log({
+            f"{trainer.state.stage}/reconstruction_samples": wandb.Image(rgb_grid,
+                caption="Original and reconstructed images")
+        })
+
+        if self.channels is not None:
+            if len(self.channels) != grid.shape[0]:
+                raise ValueError(f"Number of channels ({len(self.channels)}) does not match number of images ({grid.shape[0]})")
+            for i, channel in enumerate(self.channels):
+                trainer.logger.experiment.log({
+                    f"{trainer.state.stage}/reconstruction_samples_{channel}": wandb.Image(grid[i],
+                        caption=f"Original and reconstructed {channel} images")
+                })
 
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
             input_imgs = trainer.datamodule.train_dataloader().dataset[:self.num_images]
             cmap = trainer.datamodule.dataset.channel_colors()
-            grid = self.__shared_reconstruction_step(input_imgs, pl_module, cmap)
-            trainer.logger.experiment.log({
-                "training_samples": wandb.Image(grid,
-                    caption="Original and reconstructed images")
-            })
+            self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
             input_imgs = trainer.datamodule.val_dataloader().dataset[:self.num_images]
             cmap = trainer.datamodule.dataset.channel_colors()
-            grid = self.__shared_reconstruction_step(input_imgs, pl_module, cmap)
-            trainer.logger.experiment.log({
-                "validation_samples": wandb.Image(grid,
-                    caption="Original and reconstructed images")
-            })
+            self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
             
     def on_test_end(self, trainer, pl_module):
         input_imgs = trainer.datamodule.test_dataloader().dataset[:self.num_images]
         cmap = trainer.datamodule.dataset.channel_colors()
-        grid = self.__shared_reconstruction_step(input_imgs, pl_module, cmap)
-        trainer.logger.experiment.log({
-            "testing_samples": wandb.Image(grid,
-                caption="Original and reconstructed images")
-        })
+        self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
 
     def image_list_normalization(image_list):
         for i in range(len(image_list)):

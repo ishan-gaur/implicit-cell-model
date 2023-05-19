@@ -31,13 +31,21 @@ class Encoder(nn.Module):
         in_ch = nc
         for depth in range(len(ch_mult)):
             out_ch = self.nf * self.ch_mult[depth]
-            self.layers.append(
-                nn.Sequential(
-                    nn.BatchNorm2d(in_ch),
-                    nn.Conv2d(in_ch, out_ch, 4, 2, 1),
-                    nn.LeakyReLU(inplace=True)
-                ) 
-            )
+            if depth == 0:
+                self.layers.append(
+                    nn.Sequential(
+                        nn.Conv2d(in_ch, out_ch, 4, 2, 1),
+                        nn.LeakyReLU(inplace=True)
+                    )
+                )
+            else:
+                self.layers.append(
+                    nn.Sequential(
+                        nn.Conv2d(in_ch, out_ch, 4, 2, 1),
+                        nn.BatchNorm2d(out_ch),
+                        nn.LeakyReLU(inplace=True)
+                    )
+                )
             in_ch = out_ch
 
         state_width = imsize // (2 ** len(self.ch_mult))
@@ -81,13 +89,21 @@ class Decoder(nn.Module):
         out_ch = nc
         for depth in range(len(ch_mult), 0, -1):
             in_ch = self.nf * ch_mult[depth - 1]
-            self.layers.insert(0,
-                nn.Sequential(
-                    nn.BatchNorm2d(in_ch),
-                    nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1),
-                    nn.LeakyReLU(inplace=True)
+            if depth == len(ch_mult):
+                self.layers.insert(0,
+                    nn.Sequential(
+                        nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1),
+                        nn.Sigmoid()
+                    )
                 )
-            )
+            else:
+                self.layers.insert(0,
+                    nn.Sequential(
+                        nn.BatchNorm2d(in_ch),
+                        nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1),
+                        nn.LeakyReLU(inplace=True)
+                    )
+                )
             out_ch = in_ch
 
     def forward(self, z):
@@ -95,6 +111,8 @@ class Decoder(nn.Module):
         z = z.view(-1, self.nf * self.ch_mult[0], self.state_width, self.state_width)
         for i in range(len(self.layers)):
             z = self.layers[i](z)
+        # sigmoid is last, so rescale to -1, 1
+        z = 2 * z - 1
         return z
 
 

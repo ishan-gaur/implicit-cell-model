@@ -43,7 +43,7 @@ if args.model not in ["reference", "fucci", "total"]:
 config = {
     "imsize": 256,
     "nf": 128,
-    "batch_size": 32,
+    "batch_size": 24,
     "num_devices": 8,
     "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
@@ -115,6 +115,8 @@ model = AutoEncoder(
     channels=dm.get_channels()
 )
 
+wandb_logger.watch(model, log="all", log_freq=10)
+
 print_with_time("Setting up trainer...")
 
 trainer = pl.Trainer(
@@ -127,14 +129,14 @@ trainer = pl.Trainer(
     # detect_anomaly=True,
     # num_sanity_val_steps=2,
     # overfit_batches=5,
-    # log_every_n_steps=1,
+    log_every_n_steps=1,
     logger=wandb_logger,
     max_epochs=config["epochs"],
     callbacks=[
         checkpoint_callback,
         stopping_callback,
         LearningRateMonitor(logging_interval='step'),
-        ReconstructionVisualization()
+        ReconstructionVisualization(channels=dm.get_channels())
     ]
 )
 
