@@ -76,7 +76,7 @@ class AutoEncoder(pl.LightningModule):
         nf=128,
         ch_mult=(1, 2, 4, 8, 8, 8),
         imsize=256,
-        latent_dim=512,
+        latent_dim=2048,
         lr=1e-6,
         patience=4,
         channels=None
@@ -149,6 +149,9 @@ class AutoEncoder(pl.LightningModule):
             self.log("val/nan_std", torch.sum(torch.isnan(std)), on_step=True, on_epoch=False,reduce_fx=torch.sum, sync_dist=False)
             self.log("val/nan_z", torch.sum(torch.isnan(z)), on_step=True, on_epoch=False, reduce_fx=torch.sum, sync_dist=False)
             self.log("val/nan_test", 1, on_step=True, on_epoch=False, reduce_fx=torch.sum, sync_dist=False)
+            self.log({f"val/nan_DAPI": wandb.Image(x[0])}, on_step=True, on_epoch=False, sync_dist=False)
+            self.log({f"val/nan_gamma-tubulin": wandb.Image(x[1])}, on_step=True, on_epoch=False, sync_dist=False)
+            
         return loss, x_hat
 
     def training_step(self, batch, batch_idx):

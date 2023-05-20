@@ -43,15 +43,16 @@ if args.model not in ["reference", "fucci", "total"]:
 config = {
     "imsize": 256,
     "nf": 128,
-    "batch_size": 24,
+    "batch_size": 32,
     "num_devices": 8,
     "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
-    "lr": 1e-5,
+    "lr": 1e-6,
     "min_delta": 1e5,
-    "patience": 15,
-    "stopping_patience": 100,
-    "epochs": args.epochs
+    "patience": 5,
+    "stopping_patience": 20,
+    "epochs": args.epochs,
+    "latent_dim": 2048,
 }
 
 fucci_path = Path(args.data)
@@ -113,7 +114,8 @@ model = AutoEncoder(
     imsize=config["imsize"],
     lr=config["lr"],
     patience=config["patience"],
-    channels=dm.get_channels()
+    channels=dm.get_channels(),
+    latent_dim=config["latent_dim"],
 )
 
 wandb_logger.watch(model, log="all", log_freq=10)
@@ -129,13 +131,13 @@ trainer = pl.Trainer(
     # fast_dev_run=10,
     # detect_anomaly=True,
     # num_sanity_val_steps=2,
-    # overfit_batches=5,
+    overfit_batches=32,
     log_every_n_steps=1,
     logger=wandb_logger,
     max_epochs=config["epochs"],
     callbacks=[
         checkpoint_callback,
-        stopping_callback,
+        # stopping_callback,
         LearningRateMonitor(logging_interval='step'),
         ReconstructionVisualization(channels=dm.get_channels())
     ]
