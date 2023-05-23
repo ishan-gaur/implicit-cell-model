@@ -28,6 +28,7 @@ parser.add_argument("-r", "--reason", required=True, help="reason for this run")
 parser.add_argument("-d", "--dev", action="store_true", help="run in development mode uses 10 percent of data")
 parser.add_argument("-c", "--cpu", action="store_true", help="run on CPU")
 parser.add_argument("-e", "--epochs", type=int, default=100, help="maximum number of epochs to train for")
+parser.add_argument("-l", "--checkpoint", help="path to checkpoint to load from")
 
 args = parser.parse_args()
 
@@ -37,6 +38,10 @@ if not args.single:
 if args.model not in ["reference", "fucci", "total"]:
     raise ValueError("Model must be one of: reference, fucci, total")
 
+if args.checkpoint is not None:
+    if not Path(args.checkpoint).exists():
+        raise ValueError("Checkpoint path does not exist.")
+
 ##########################################################################################
 # Experiment parameters and logging
 ##########################################################################################
@@ -45,13 +50,15 @@ config = {
     "nf": 128,
     "batch_size": 24,
     "num_devices": 8,
-    "num_workers": 8,
+    "num_workers": 16,
     "split": (0.64, 0.16, 0.2),
-    "lr": 1e-4,
-    "min_delta": 1e3,
-    "patience": 3,
-    "stopping_patience": 6,
-    "epochs": args.epochs
+    "lr": 1e-5,
+    # "min_delta": 1e3,
+    "patience": 10,
+    # "stopping_patience": 10,
+    "epochs": args.epochs,
+    "model": args.model,
+    "latent_dim": 2048,
 }
 
 fucci_path = Path(args.data)
@@ -82,14 +89,15 @@ checkpoint_callback = ModelCheckpoint(
     filename="{epoch:02d}-{Val_loss:.2f}",
 )
 
-if config["patience"] > config["stopping_patience"]:
-    raise ValueError("Patience must be less than stopping patience. LR will never get adjusted.")
+# if config["patience"] > config["stopping_patience"]:
+    # raise ValueError("Patience must be less than stopping patience. LR will never get adjusted.")
 
-stopping_callback = EarlyStopping(
-    monitor="val/loss",
-    min_delta=config["min_delta"],
-    mode="min"
-)
+# stopping_callback = EarlyStopping(
+#     monitor="val/loss",
+#     min_delta=config["min_delta"],
+#     mode="min",
+#     patience=config["stopping_patience"],
+# )
 
 ##########################################################################################
 # Set up data, model, and trainer
@@ -106,14 +114,20 @@ dm = FUCCIDataModule(
 )
 
 print_with_time("Setting up Autoencoder...")
-model = AutoEncoder(
-    nc=2 if args.model in ["reference", "fucci"] else 4,
-    nf=config["nf"],
-    imsize=config["imsize"],
-    lr=config["lr"],
-    patience=config["patience"],
-    channels=dm.get_channels()
-)
+if args.checkpoint is None:
+    model = AutoEncoder(
+        nc=2 if args.model in ["reference", "fucci"] else 4,
+        nf=config["nf"],
+        imsize=config["imsize"],
+        lr=config["lr"],
+        patience=config["patience"],
+        channels=dm.get_channels(),
+        latent_dim=config["latent_dim"],
+    )
+else:
+    model = AutoEncoder.load_from_checkpoint(args.checkpoint)
+
+wandb_logger.watch(model, log="all", log_freq=10)
 
 print_with_time("Setting up trainer...")
 
@@ -126,15 +140,15 @@ trainer = pl.Trainer(
     # fast_dev_run=10,
     # detect_anomaly=True,
     # num_sanity_val_steps=2,
-    # overfit_batches=5,
+    # overfit_batches=32,
     # log_every_n_steps=1,
     logger=wandb_logger,
     max_epochs=config["epochs"],
     callbacks=[
         checkpoint_callback,
-        stopping_callback,
+        # stopping_callback,
         LearningRateMonitor(logging_interval='step'),
-        ReconstructionVisualization()
+        ReconstructionVisualization(channels=dm.get_channels())
     ]
 )
 
