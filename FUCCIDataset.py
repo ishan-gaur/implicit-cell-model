@@ -300,6 +300,37 @@ class FUCCIChannelDatasetInMemory(FUCCIDatasetInMemory):
         return self.channels[2:]
 
 
+class ChannelDatasetInMemory(FUCCIDatasetInMemory):
+    def __init__(self, channel_slice=[0, 1, 2, 3], *args, **kwargs):
+        if min(channel_slice) < 0 or max(channel_slice) > 3 or len(channel_slice) > 4:
+            raise ValueError("Channels must be a list of at most 4 integers in the range [0, 3]")
+        super().__init__(*args, **kwargs)
+        self.dataset_images = self.dataset_images[..., channel_slice, :, :]
+        self.channel_slice = channel_slice
+
+    def channel_colors(self):
+        return [self.cmap[c] for c in self.channel_slice]
+
+    def get_channel_names(self):
+        return [self.channels[c] for c in self.channel_slice]
+
+
+class GemininDatasetInMemory(ChannelDatasetInMemory):
+    def __init__(self, *args, **kwargs):
+        super().__init__(channel_slice=[2], *args, **kwargs)
+    
+    def __getitem__(self, idx):
+        return super().__getitem__(idx).clamp(min=200)
+
+
+class CDT1DatasetInMemory(ChannelDatasetInMemory):
+    def __init__(self, *args, **kwargs):
+        super().__init__(channel_slice=[3], *args, **kwargs)
+    
+    def __getitem__(self, idx):
+        return super().__getitem__(idx).clamp(min=200)
+
+
 def clean_dir(data_dir):
     if not isinstance(data_dir, Path):
         data_dir = Path(data_dir)
