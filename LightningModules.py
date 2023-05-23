@@ -76,7 +76,7 @@ class AutoEncoder(pl.LightningModule):
         latent_dim=512,
         lr=1e-6,
         patience=4,
-        channels=None
+        channels=None,
     ):
 
         super().__init__()
@@ -157,6 +157,7 @@ class AutoEncoder(pl.LightningModule):
         scheduler = ReduceLROnPlateau(
             optimizer,
             patience=self.patience,
+            eps=1e-10,
         )
         return {
             "optimizer": optimizer,
@@ -168,54 +169,23 @@ class AutoEncoder(pl.LightningModule):
         scheduler.step(metric)
 
 class ReconstructionVisualization(Callback):
-    def __init__(self, num_images=8, every_n_epochs=1):
+    def __init__(self, num_images=8, every_n_epochs=1, channels=None):
         super().__init__()
         self.num_images = num_images
         self.every_n_epochs = every_n_epochs
+        self.channels = channels
 
     def __shared_reconstruction_step(self, input_imgs, pl_module, cmap):
-        # Reconstruct images
         input_imgs = input_imgs.to(pl_module.device)
         with torch.no_grad():
             pl_module.eval()
             reconst_imgs = pl_module(input_imgs)
             pl_module.train()
-        # print(f"input: {input_imgs.shape}, reconst: {reconst_imgs.shape}")
-        # Plot and add to wandb
         grid = ReconstructionVisualization.make_reconstruction_grid(input_imgs, reconst_imgs)
         grid = tensor_to_image(grid)
         grid = np.moveaxis(grid, -1, 0)
-        grid, _, _, _ = multichannel_to_rgb(grid, cmaps=cmap)
-        return grid
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        if trainer.current_epoch % self.every_n_epochs == 0:
-            input_imgs = trainer.datamodule.train_dataloader().dataset[:self.num_images]
-            cmap = trainer.datamodule.dataset.channel_colors()
-            grid = self.__shared_reconstruction_step(input_imgs, pl_module, cmap)
-            trainer.logger.experiment.log({
-                "training_samples": wandb.Image(grid,
-                    caption="Original and reconstructed images")
-            })
-
-    def on_validation_epoch_end(self, trainer, pl_module):
-        if trainer.current_epoch % self.every_n_epochs == 0:
-            input_imgs = trainer.datamodule.val_dataloader().dataset[:self.num_images]
-            cmap = trainer.datamodule.dataset.channel_colors()
-            grid = self.__shared_reconstruction_step(input_imgs, pl_module, cmap)
-            trainer.logger.experiment.log({
-                "validation_samples": wandb.Image(grid,
-                    caption="Original and reconstructed images")
-            })
-            
-    def on_test_end(self, trainer, pl_module):
-        input_imgs = trainer.datamodule.test_dataloader().dataset[:self.num_images]
-        cmap = trainer.datamodule.dataset.channel_colors()
-        grid = self.__shared_reconstruction_step(input_imgs, pl_module, cmap)
-        trainer.logger.experiment.log({
-            "testing_samples": wandb.Image(grid,
-                caption="Original and reconstructed images")
-        })
+        rgb_grid, _, _, _ = multichannel_to_rgb(grid, cmaps=cmap)
+        return rgb_grid, grid
 
     def image_list_normalization(image_list):
         for i in range(len(image_list)):
@@ -226,5 +196,38 @@ class ReconstructionVisualization(Callback):
 
     def make_reconstruction_grid(input_imgs, reconst_imgs):
         imgs = torch.stack([input_imgs, reconst_imgs], dim=1).flatten(0, 1)
-        grid = make_grid(imgs, nrow=2, normalize=True, range=(-1, 1))
+        grid = make_grid(imgs, nrow=2, normalize=True)
         return grid
+
+    def __shared_logging_step(self, input_imgs, pl_module, cmap, trainer):
+        rgb_grid, grid = self.__shared_reconstruction_step(input_imgs, pl_module, cmap)
+        trainer.logger.experiment.log({
+            f"{trainer.state.stage}/reconstruction_samples": wandb.Image(rgb_grid,
+                caption="Original and reconstructed images")
+        })
+
+        if self.channels is not None:
+            if len(self.channels) != grid.shape[0]:
+                raise ValueError(f"Number of channels ({len(self.channels)}) does not match number of images ({grid.shape[0]})")
+            for i, channel in enumerate(self.channels):
+                trainer.logger.experiment.log({
+                    f"{trainer.state.stage}/reconstruction_samples_{channel}": wandb.Image(grid[i],
+                        caption=f"Original and reconstructed {channel} images")
+                })
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if trainer.current_epoch % self.every_n_epochs == 0:
+            input_imgs = trainer.datamodule.train_dataloader().dataset[:self.num_images]
+            cmap = trainer.datamodule.dataset.channel_colors()
+            self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.current_epoch % self.every_n_epochs == 0:
+            input_imgs = trainer.datamodule.val_dataloader().dataset[:self.num_images]
+            cmap = trainer.datamodule.dataset.channel_colors()
+            self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
+            
+    def on_test_end(self, trainer, pl_module):
+        input_imgs = trainer.datamodule.test_dataloader().dataset[:self.num_images]
+        cmap = trainer.datamodule.dataset.channel_colors()
+        self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
