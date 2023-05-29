@@ -104,7 +104,8 @@ class FUCCIDataset(Dataset):
 
         for split in self.data_dir.iterdir():
             if not split.is_dir():
-                raise ValueError(f"Training split {split} is not a directory")
+                warnings.warn(f"Training split {split} is not a directory")
+                continue
 
             for experiment in split.iterdir():
                 if not experiment.is_dir():
@@ -170,7 +171,7 @@ class FUCCIDataset(Dataset):
     def __len__(self):
         return self.len
 
-    def __dataset_to_exp_index(self, idx):
+    def image_exp_index(self, idx):
         exp_index = 0
         while exp_index < len(self.dataset) and self.dataset[exp_index][0] <= idx:
             exp_index += 1
@@ -179,7 +180,7 @@ class FUCCIDataset(Dataset):
         return experiment_entry, cell_index
 
     def __get_single_item(self, idx):
-        experiment_entry, cell_index = self.__dataset_to_exp_index(idx)
+        experiment_entry, cell_index = self.image_exp_index(idx)
         image = self.__image_from_experiment(experiment_entry[1])
         mask = (iio.imread(experiment_entry[1] / "mask.png") == 1 + cell_index)
         cell_image = image * np.expand_dims(mask, axis=2)
@@ -212,7 +213,6 @@ class FUCCIDataset(Dataset):
             raise IndexError(f"Index {idx} out of range for dataset of length {self.len}")
         cell_images = np.load(self.dataset[idx][1] / "cells.npy")
         return cell_images
-        
 
     def get_original_image(self, idx):
         return self.__image_from_experiment(self.dataset[idx][1])

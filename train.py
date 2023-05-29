@@ -21,7 +21,7 @@ torch.set_float32_matmul_precision('medium')
 
 parser = argparse.ArgumentParser(description="Train a model on the FUCCI dataset.",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument("-s", "--single", action="store_true", help="train single model")
+# parser.add_argument("-s", "--single", action="store_true", help="train single model")
 parser.add_argument("-m", "--model", help="specify which model to train: reference, fucci, or total")
 parser.add_argument("-f", "--data", required=True, help="path to dataset")
 parser.add_argument("-r", "--reason", required=True, help="reason for this run")
@@ -32,8 +32,8 @@ parser.add_argument("-l", "--checkpoint", help="path to checkpoint to load from"
 
 args = parser.parse_args()
 
-if not args.single:
-    raise NotImplementedError("Only single model training is supported at this time.")
+# if not args.single:
+#     raise NotImplementedError("Only single model training is supported at this time.")
 
 if args.model not in ["reference", "fucci", "total"]:
     raise ValueError("Model must be one of: reference, fucci, total")
@@ -48,9 +48,9 @@ if args.checkpoint is not None:
 config = {
     "imsize": 256,
     "nf": 128,
-    "batch_size": 24,
-    "num_devices": 8,
-    "num_workers": 16,
+    "batch_size": 16,
+    "num_devices": 4,
+    "num_workers": 4,
     "split": (0.64, 0.16, 0.2),
     "lr": 1e-5,
     # "min_delta": 1e3,
@@ -58,12 +58,14 @@ config = {
     # "stopping_patience": 10,
     "epochs": args.epochs,
     "model": args.model,
-    "latent_dim": 2048,
+    "latent_dim": 512,
+    "eps": 1e-12,
+    "factor": 0.5,
 }
 
 fucci_path = Path(args.data)
 project_name = f"FUCCI_{args.model}_VAE"
-log_folder = Path(f"/data/ishang/fucci_vae/{project_name}_{time.strftime('%Y_%d_%m_%H_%M')}")
+log_folder = Path(f"/data/ishang/fucci_vae/{project_name}_{time.strftime('%Y_%m_%d_%H_%M')}")
 if not log_folder.exists():
     os.mkdir(log_folder)
 with open(log_folder / "reason.txt", "w") as f:
@@ -123,6 +125,8 @@ if args.checkpoint is None:
         patience=config["patience"],
         channels=dm.get_channels(),
         latent_dim=config["latent_dim"],
+        eps=config["eps"],
+        factor=config["factor"],
     )
 else:
     model = AutoEncoder.load_from_checkpoint(args.checkpoint)
@@ -135,6 +139,7 @@ trainer = pl.Trainer(
     default_root_dir=lightning_dir,
     accelerator="gpu" if not args.cpu else "cpu",
     devices=config["num_devices"] if not args.cpu else "auto",
+    # devices=[4, 5, 6, 7],
     limit_train_batches=0.1 if args.dev else None,
     limit_val_batches=0.1 if args.dev else None,
     # fast_dev_run=10,

@@ -114,5 +114,21 @@
                 "/data/ishang/Fucci-dataset-v3_filtered/"
             ]
         },
+        {
+            "name": "Predict: Get reference embeddings",
+            "type": "python",
+            "python": "/home/ishang/miniconda3/envs/implicit/bin/python",
+            "request": "launch",
+            "program": "${workspaceFolder}/embedding.py",
+            "console": "integratedTerminal",
+            "args": [
+                "-m",
+                "/data/ishang/fucci_vae/fucci_256_512_2023_05_24_05_47/",
+                "-c",
+                "reference"
+                "-d",
+                "/home/ishang/implicit-cell-model/FUCCI-dev-data/"
+            ]
+        },
     ]
 }

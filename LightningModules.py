@@ -1,4 +1,5 @@
 from pathlib import Path
+from lightning.pytorch.utilities.types import EVAL_DATALOADERS
 
 import torch
 from torch import optim
@@ -51,8 +52,8 @@ class FUCCIDataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
 
-    def _shared_dataloader(self, dataset):
-        return DataLoader(dataset, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+    def _shared_dataloader(self, dataset, shuffle=True):
+        return DataLoader(dataset, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True, shuffle=shuffle)
 
     def train_dataloader(self):
         return self._shared_dataloader(self.data_train)
@@ -62,6 +63,9 @@ class FUCCIDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         return self._shared_dataloader(self.data_test)
+
+    def predict_dataloader(self):
+        return self._shared_dataloader(self.dataset, shuffle=False)
 
     def get_channels(self):
         return self.dataset.get_channel_names()
@@ -77,6 +81,8 @@ class AutoEncoder(pl.LightningModule):
         lr=1e-6,
         patience=4,
         channels=None,
+        eps=1e-8,
+        factor=0.1,
     ):
 
         super().__init__()
@@ -87,6 +93,8 @@ class AutoEncoder(pl.LightningModule):
         self.decoder = Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim)
         self.patience = patience
         self.channels = channels
+        self.eps = eps
+        self.factor = factor
 
     def reparameterized_sampling(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -99,6 +107,12 @@ class AutoEncoder(pl.LightningModule):
         z = self.reparameterized_sampling(mu, logvar)
         x_hat = self.decoder(z)
         return x_hat
+
+    def forward_embedding(self, x):
+        mu, logvar = self.encoder(x)
+        z = self.reparameterized_sampling(mu, logvar)
+        x_hat = self.decoder(z)
+        return x_hat, torch.stack([mu, logvar], dim=1)
 
     def _shared_step(self, batch):
         x = batch
@@ -152,12 +166,18 @@ class AutoEncoder(pl.LightningModule):
             self.log("test/loss", loss, sync_dist=True)
         return loss['total']
 
+    def predict_step(self, batch, batch_idx):
+        # returns embeddings w two channels, first is mu, second is logvar
+        predictions, embeddings = self.forward_embedding(batch)
+        return predictions, embeddings
+
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
         scheduler = ReduceLROnPlateau(
             optimizer,
             patience=self.patience,
-            eps=1e-10,
+            eps=self.eps,
+            factor=self.factor,
         )
         return {
             "optimizer": optimizer,
@@ -167,6 +187,7 @@ class AutoEncoder(pl.LightningModule):
 
     def lr_scheduler_step(self, scheduler, metric):
         scheduler.step(metric)
+
 
 class ReconstructionVisualization(Callback):
     def __init__(self, num_images=8, every_n_epochs=1, channels=None):
