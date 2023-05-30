@@ -12,4 +12,11 @@ dependencies:
   - kornia
   - imageio
   - microfilm
+  - tensorboardx
+  - seaborn
+  - scikit-learn
+  - bokeh
+  - datashader
+  - holoviews
+  - umap-learn
 prefix: /home/ishang/miniconda3/envs/implicit
