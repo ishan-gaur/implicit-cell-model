@@ -72,10 +72,13 @@ class FUCCIDataset(Dataset):
     DAPI is a blue fluorescent protein that binds to DNA
     gamma-tubulin is a red fluorescent protein that binds to microtubules
     """
-    def __init__(self, data_dir, imsize, rebuild=False, verbose=False, cmap=["pure_blue", "pure_yellow", "pure_green", "pure_red"]):
+    def __init__(self, data_dir, imsize, rebuild=False, verbose=False,
+                 cmap=["pure_blue", "pure_yellow", "pure_green", "pure_red"],
+                 transform=None):
         super().__init__()
 
         self.verbose = verbose
+        self.transform = transform
 
         if not isinstance(data_dir, Path):
             data_dir = Path(data_dir)
@@ -190,6 +193,8 @@ class FUCCIDataset(Dataset):
         centered = image_to_tensor(centered, keepdim=True)
         cropped = K.CenterCrop(centered.shape[1] // 2, keepdim=True)(centered)
         img_small = T.resize(cropped, self.imsize)
+        if self.transform is not None:
+            return self.transform(img_small)
         return img_small
         # return cropped
         # centered = np.moveaxis(centered, -1, 0)
@@ -267,7 +272,13 @@ class FUCCIDatasetInMemory(FUCCIDataset):
         self.dataset_images = torch.Tensor(self.dataset_images)
     
     def __getitem__(self, idx):
-        return self.dataset_images[idx]
+        images = self.dataset_images[idx]
+        if self.transform is not None:
+            images = torch.roll(images, shifts=1, dims=0)
+            # images_temp = images.clone()
+            # images[..., 0, :, :] = images_temp[..., 1, :, :]
+            # images[..., 1, :, :] = images_temp[..., 0, :, :]
+        return images
 
 
 class ReferenceChannelDatasetInMemory(FUCCIDatasetInMemory):

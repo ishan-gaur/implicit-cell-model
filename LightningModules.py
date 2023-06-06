@@ -21,7 +21,9 @@ from FUCCIDataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, 
 from models import Encoder, Decoder
 
 class FUCCIDataModule(pl.LightningDataModule):
-    def __init__(self, data_dir, dataset, batch_size, num_workers, imsize=1024, split=(0.64, 0.16, 0.2), in_memory=True):
+    def __init__(self, data_dir, dataset, batch_size, num_workers, 
+                 imsize=1024, split=(0.64, 0.16, 0.2), in_memory=True,
+                 permutation=None):
         super().__init__()
         if not isinstance(data_dir, Path):
             data_dir = Path(data_dir)
@@ -29,20 +31,26 @@ class FUCCIDataModule(pl.LightningDataModule):
 
         self.imsize = imsize
 
+        # not the right thing to do...
+        if permutation is not None:
+            transform = lambda x: x.permute(permutation)
+        else:
+            transform = None
+
         if not in_memory:
             if dataset == "total":
-                self.dataset = FUCCIDataset(self.data_dir, imsize=self.imsize)
+                self.dataset = FUCCIDataset(self.data_dir, imsize=self.imsize, transform=transform)
             if dataset == "reference":
-                self.dataset = ReferenceChannelDataset(self.data_dir, imsize=self.imsize)
+                self.dataset = ReferenceChannelDataset(self.data_dir, imsize=self.imsize, transform=transform)
             if dataset == "fucci":
-                self.dataset = FUCCIChannelDataset(self.data_dir, imsize=self.imsize)
+                self.dataset = FUCCIChannelDataset(self.data_dir, imsize=self.imsize, transform=transform)
         else:
             if dataset == "total":
-                self.dataset = FUCCIDatasetInMemory(self.data_dir, imsize=self.imsize)
+                self.dataset = FUCCIDatasetInMemory(self.data_dir, imsize=self.imsize, transform=transform)
             if dataset == "reference":
-                self.dataset = ReferenceChannelDatasetInMemory(self.data_dir, imsize=self.imsize)
+                self.dataset = ReferenceChannelDatasetInMemory(self.data_dir, imsize=self.imsize, transform=transform)
             if dataset == "fucci":
-                self.dataset = FUCCIChannelDatasetInMemory(self.data_dir, imsize=self.imsize)
+                self.dataset = FUCCIChannelDatasetInMemory(self.data_dir, imsize=self.imsize, transform=transform)
 
         self.split = split
         if len(self.split) != 3:
@@ -110,9 +118,9 @@ class AutoEncoder(pl.LightningModule):
 
     def forward_embedding(self, x):
         mu, logvar = self.encoder(x)
-        z = self.reparameterized_sampling(mu, logvar)
-        x_hat = self.decoder(z)
-        return x_hat, torch.stack([mu, logvar], dim=1)
+        # z = self.reparameterized_sampling(mu, logvar)
+        # x_hat = self.decoder(z)
+        return mu, logvar
 
     def _shared_step(self, batch):
         x = batch
@@ -166,10 +174,20 @@ class AutoEncoder(pl.LightningModule):
             self.log("test/loss", loss, sync_dist=True)
         return loss['total']
 
+    def list_predict_modes(self):
+        return ["forward", "embedding"]
+
+    def set_predict_mode(self, mode):
+        if mode not in self.list_predict_modes():
+            raise ValueError(f"Predict mode {mode} not supported. Must be one of {self.list_predict_modes()}")
+        self.predict_mode = mode
+
     def predict_step(self, batch, batch_idx):
         # returns embeddings w two channels, first is mu, second is logvar
-        predictions, embeddings = self.forward_embedding(batch)
-        return predictions, embeddings
+        if self.predict_mode is None or self.predict_mode == "forward":
+            return self.forward(batch)
+        elif self.predict_mode == "embedding":
+            return self.forward_embedding(batch)
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
