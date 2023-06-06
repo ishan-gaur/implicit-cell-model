@@ -104,31 +104,25 @@ class AutoEncoder(pl.LightningModule):
         self.eps = eps
         self.factor = factor
 
-    def reparameterized_sampling(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
+    def reparameterized_sampling(self, mu, var):
+        std = torch.exp(0.5 * torch.log(var))
         eps = torch.randn_like(mu)
         sample = eps.mul(std).add_(mu)
         return sample
 
     def forward(self, x):
-        mu, logvar = self.encoder(x)
-        z = self.reparameterized_sampling(mu, logvar)
+        mu, var = self.encoder(x)
+        z = self.reparameterized_sampling(mu, var)
         x_hat = self.decoder(z)
         return x_hat
 
     def forward_embedding(self, x):
-        mu, logvar = self.encoder(x)
-        # z = self.reparameterized_sampling(mu, logvar)
-        # x_hat = self.decoder(z)
-        return mu, logvar
+        mu, var = self.encoder(x)
+        return mu, var
 
     def _shared_step(self, batch):
         x = batch
-        mu, logvar = self.encoder(x)
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(mu)
-        z = eps.mul(std).add_(mu)
-        x_hat = self.decoder(z)
+        x_hat = self.forward(x)
         loss = F.mse_loss(x_hat, x)
         if self.channels is not None:
             loss_dict = {}
@@ -155,11 +149,11 @@ class AutoEncoder(pl.LightningModule):
         if isinstance(loss, dict):
             for channel in loss:
                 if channel == "total":
-                    self.log(f"val/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+                    self.log(f"validate/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
                 else:
-                    self.log(f"val/loss_{channel}", loss[channel], on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+                    self.log(f"validate/loss_{channel}", loss[channel], on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         else:
-            self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+            self.log("validate/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss['total']
     
     def test_step(self, batch, batch_idx):
@@ -270,3 +264,44 @@ class ReconstructionVisualization(Callback):
         input_imgs = trainer.datamodule.test_dataloader().dataset[:self.num_images]
         cmap = trainer.datamodule.dataset.channel_colors()
         self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
+
+
+class EmbeddingLogger(Callback):
+    def __init__(self, num_images=200, every_n_epochs=5):
+        super().__init__()
+        self.num_images = num_images
+        self.every_n_epochs = every_n_epochs
+
+    def __x_logging_step(self, x, trainer, name):
+        trainer.logger.experiment.log({
+            f"{trainer.state.stage}/embedding_{name}_mean": x.mean()
+        })
+        trainer.logger.experiment.log({
+            f"{trainer.state.stage}/embedding_{name}_min": x.min()
+        })
+        trainer.logger.experiment.log({
+            f"{trainer.state.stage}/embedding_{name}_max": x.max()
+        })
+
+    def __shared_logging_step(self, input_imgs, pl_module, trainer):
+        input_imgs = input_imgs.to(pl_module.device)
+        with torch.no_grad():
+            pl_module.eval()
+            mu, var = pl_module.forward_embedding(input_imgs)
+            pl_module.train()
+        self.__x_logging_step(mu, trainer, "mu")
+        self.__x_logging_step(var, trainer, "var")
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if trainer.current_epoch % self.every_n_epochs == 0:
+            input_imgs = trainer.datamodule.train_dataloader().dataset[:self.num_images]
+            self.__shared_logging_step(input_imgs, pl_module, trainer)
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.current_epoch % self.every_n_epochs == 0:
+            input_imgs = trainer.datamodule.val_dataloader().dataset[:self.num_images]
+            self.__shared_logging_step(input_imgs, pl_module, trainer)
+            
+    def on_test_end(self, trainer, pl_module):
+        input_imgs = trainer.datamodule.test_dataloader().dataset[:self.num_images]
+        self.__shared_logging_step(input_imgs, pl_module, trainer)

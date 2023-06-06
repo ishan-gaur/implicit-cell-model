@@ -9,7 +9,8 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 
-from LightningModules import AutoEncoder, FUCCIDataModule, ReconstructionVisualization
+from LightningModules import AutoEncoder, FUCCIDataModule
+from LightningModules import ReconstructionVisualization, EmbeddingLogger
 from models import Encoder, Decoder
 
 ##########################################################################################
@@ -85,10 +86,10 @@ wandb_logger = WandbLogger(
 
 checkpoint_callback = ModelCheckpoint(
     save_top_k=1,
-    monitor="val/loss",
+    monitor="validate/loss",
     mode="min",
     dirpath=lightning_dir,
-    filename="{epoch:02d}-{Val_loss:.2f}",
+    filename="{epoch:02d}-{validate/loss:.2f}",
 )
 
 # if config["patience"] > config["stopping_patience"]:
@@ -153,7 +154,8 @@ trainer = pl.Trainer(
         checkpoint_callback,
         # stopping_callback,
         LearningRateMonitor(logging_interval='step'),
-        ReconstructionVisualization(channels=dm.get_channels())
+        ReconstructionVisualization(channels=dm.get_channels()),
+        EmbeddingLogger(),
     ]
 )
 
