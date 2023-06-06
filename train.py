@@ -50,8 +50,8 @@ config = {
     "imsize": 256,
     "nf": 128,
     "batch_size": 16,
-    "num_devices": 4,
-    "num_workers": 4,
+    "num_devices": 8,
+    "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
     "lr": 1e-5,
     # "min_delta": 1e3,
@@ -90,6 +90,7 @@ checkpoint_callback = ModelCheckpoint(
     mode="min",
     dirpath=lightning_dir,
     filename="{epoch:02d}-{validate/loss:.2f}",
+    auto_insert_metric_name=False,
 )
 
 # if config["patience"] > config["stopping_patience"]:

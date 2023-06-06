@@ -67,10 +67,10 @@ class FUCCIDataModule(pl.LightningDataModule):
         return self._shared_dataloader(self.data_train)
 
     def val_dataloader(self):
-        return self._shared_dataloader(self.data_val)
+        return self._shared_dataloader(self.data_val, shuffle=False)
 
     def test_dataloader(self):
-        return self._shared_dataloader(self.data_test)
+        return self._shared_dataloader(self.data_test, shuffle=False)
 
     def predict_dataloader(self):
         return self._shared_dataloader(self.dataset, shuffle=False)
