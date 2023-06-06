@@ -44,14 +44,20 @@ class Encoder(nn.Module):
         state_area = state_width ** 2
         self.fc_input_size = self.nf * ch_mult[-1] * state_area
         # to retrieve mean and variance of predicted latent distribution
-        self.fc_mu = nn.Linear(self.fc_input_size, self.latent_dim)
-        self.fc_logvar = nn.Linear(self.fc_input_size, self.latent_dim)
+        self.fc_mu = nn.Sequential(
+            nn.Linear(self.fc_input_size, self.latent_dim),
+            # nn.Sigmoid()
+        )
+        self.fc_var = nn.Sequential(
+            nn.Linear(self.fc_input_size, self.latent_dim),
+            nn.ReLU()
+        )
  
     def forward(self, x):
         for i in range(len(self.layers)):
             x = self.layers[i](x)
         x = x.view(-1, self.fc_input_size)
-        return self.fc_mu(x), self.fc_logvar(x)
+        return self.fc_mu(x), self.fc_var(x)
 
 
 class Decoder(nn.Module):

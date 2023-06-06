@@ -107,6 +107,24 @@ class FUCCIDataset(Dataset):
 
         for split in self.data_dir.iterdir():
             if not split.is_dir():
+                if "batch" in split.stem:
+                    continue
+                if "index" in split.stem:
+                    continue
+                if "indices" in split.stem:
+                    continue
+                if "prediction" in split.stem:
+                    continue
+                if "color" in split.stem:
+                    continue
+                if "mu" in split.stem:
+                    continue
+                if "logvar" in split.stem:
+                    continue
+                if "var" in split.stem:
+                    continue
+                if "embedding" in split.stem:
+                    continue
                 warnings.warn(f"Training split {split} is not a directory")
                 continue
 
