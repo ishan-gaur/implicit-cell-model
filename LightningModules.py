@@ -22,7 +22,7 @@ from models import Encoder, Decoder
 
 class FUCCIDataModule(pl.LightningDataModule):
     def __init__(self, data_dir, dataset, batch_size, num_workers, 
-                 imsize=1024, split=(0.64, 0.16, 0.2), in_memory=True,
+                 imsize=256, split=(0.64, 0.16, 0.2), in_memory=True,
                  permutation=None):
         super().__init__()
         if not isinstance(data_dir, Path):
@@ -119,6 +119,9 @@ class AutoEncoder(pl.LightningModule):
     def forward_embedding(self, x):
         mu, var = self.encoder(x)
         return mu, var
+    
+    def forward_decoding(self, z_batch):
+        return self.decoder(z_batch)
 
     def _shared_step(self, batch):
         x = batch
@@ -169,7 +172,7 @@ class AutoEncoder(pl.LightningModule):
         return loss['total']
 
     def list_predict_modes(self):
-        return ["forward", "embedding"]
+        return ["forward", "embedding", "sampling"]
 
     def set_predict_mode(self, mode):
         if mode not in self.list_predict_modes():
@@ -182,6 +185,8 @@ class AutoEncoder(pl.LightningModule):
             return self.forward(batch)
         elif self.predict_mode == "embedding":
             return self.forward_embedding(batch)
+        elif self.predict_mode == "sampling":
+            return self.forward_decoding(batch)
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
