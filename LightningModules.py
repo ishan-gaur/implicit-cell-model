@@ -105,7 +105,7 @@ class AutoEncoder(pl.LightningModule):
         self.factor = factor
 
     def reparameterized_sampling(self, mu, var):
-        std = torch.exp(0.5 * torch.log(var))
+        std = torch.pow(var, 0.5)
         eps = torch.randn_like(mu)
         sample = eps.mul(std).add_(mu)
         return sample
@@ -202,7 +202,7 @@ class AutoEncoder(pl.LightningModule):
 
 
 class ReconstructionVisualization(Callback):
-    def __init__(self, num_images=8, every_n_epochs=1, channels=None):
+    def __init__(self, num_images=8, every_n_epochs=5, channels=None):
         super().__init__()
         self.num_images = num_images
         self.every_n_epochs = every_n_epochs
