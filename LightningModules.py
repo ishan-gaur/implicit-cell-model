@@ -104,21 +104,21 @@ class AutoEncoder(pl.LightningModule):
         self.eps = eps
         self.factor = factor
 
-    def reparameterized_sampling(self, mu, var):
-        std = torch.pow(var, 0.5)
+    def reparameterized_sampling(self, mu, logvar):
+        std = torch.exp(logvar * 0.5)
         eps = torch.randn_like(mu)
         sample = eps.mul(std).add_(mu)
         return sample
 
     def forward(self, x):
-        mu, var = self.encoder(x)
-        z = self.reparameterized_sampling(mu, var)
+        mu, logvar = self.encoder(x)
+        z = self.reparameterized_sampling(mu, logvar)
         x_hat = self.decoder(z)
         return x_hat
 
     def forward_embedding(self, x):
-        mu, var = self.encoder(x)
-        return mu, var
+        mu, logvar = self.encoder(x)
+        return mu, logvar
 
     def forward_decoding(self, z_batch):
         return self.decoder(z_batch)
@@ -292,10 +292,10 @@ class EmbeddingLogger(Callback):
         input_imgs = input_imgs.to(pl_module.device)
         with torch.no_grad():
             pl_module.eval()
-            mu, var = pl_module.forward_embedding(input_imgs)
+            mu, logvar = pl_module.forward_embedding(input_imgs)
             pl_module.train()
         self.__x_logging_step(mu, trainer, "mu")
-        self.__x_logging_step(var, trainer, "var")
+        self.__x_logging_step(logvar, trainer, "logvar")
 
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
