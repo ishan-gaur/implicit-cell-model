@@ -119,7 +119,7 @@ class AutoEncoder(pl.LightningModule):
     def forward_embedding(self, x):
         mu, var = self.encoder(x)
         return mu, var
-    
+
     def forward_decoding(self, z_batch):
         return self.decoder(z_batch)
 
