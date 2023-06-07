@@ -51,16 +51,16 @@ class Encoder(nn.Module):
         # )
 
         self.fc_mu = nn.Sequential(
-            nn.Dropout(0.5),
+            # nn.Dropout(0.5),
             # nn.BatchNorm1d(2 * self.latent_dim),
             nn.Linear(self.fc_input_size, self.latent_dim),
         )
 
-        self.fc_var = nn.Sequential(
+        self.fc_logvar = nn.Sequential(
             # nn.Dropout(0.5),
             # nn.BatchNorm1d(2 * self.latent_dim),
             nn.Linear(self.fc_input_size, self.latent_dim),
-            nn.ReLU()
+            # nn.ReLU()
             # nn.Softplus()
         )
  
@@ -68,7 +68,7 @@ class Encoder(nn.Module):
         for i in range(len(self.layers)):
             x = self.layers[i](x)
         x = x.view(-1, self.fc_input_size)
-        return self.fc_mu(x), self.fc_var(x)
+        return self.fc_mu(x), self.fc_logvar(x)
 
 
 class Decoder(nn.Module):
