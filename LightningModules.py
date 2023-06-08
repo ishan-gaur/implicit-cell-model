@@ -12,6 +12,7 @@ import lightning.pytorch as pl
 from lightning.pytorch.callbacks import Callback
 
 from kornia import tensor_to_image
+from kornia.losses import ssim_loss
 from microfilm.colorify import multichannel_to_rgb
 import numpy as np
 import wandb
@@ -126,7 +127,8 @@ class AutoEncoder(pl.LightningModule):
     def _shared_step(self, batch):
         x = batch
         x_hat = self.forward(x)
-        loss = F.mse_loss(x_hat, x)
+        # loss = torch.log(1 + torch.pow(x_hat - x, 2)).mean()
+        loss = ssim_loss(x, x_hat, 5, reduction="mean")
         if self.channels is not None:
             loss_dict = {}
             loss_dict["total"] = loss
