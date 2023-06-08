@@ -50,19 +50,21 @@ class Encoder(nn.Module):
         #     nn.LeakyReLU(inplace=True),
         # )
 
-        self.fc_mu = nn.Sequential(
-            # nn.Dropout(0.5),
-            # nn.BatchNorm1d(2 * self.latent_dim),
-            nn.Linear(self.fc_input_size, self.latent_dim),
-        )
+        self.fc_mu = nn.Linear(self.fc_input_size, self.latent_dim)
+        # self.fc_mu = nn.Sequential
+        #     # nn.Dropout(0.5),
+        #     # nn.BatchNorm1d(2 * self.latent_dim),
+        #     nn.Linear(self.fc_input_size, self.latent_dim),
+        # )
 
-        self.fc_logvar = nn.Sequential(
-            # nn.Dropout(0.5),
-            # nn.BatchNorm1d(2 * self.latent_dim),
-            nn.Linear(self.fc_input_size, self.latent_dim),
-            # nn.ReLU()
-            # nn.Softplus()
-        )
+        self.fc_logvar = nn.Linear(self.fc_input_size, self.latent_dim)
+        # self.fc_logvar = nn.Sequential(
+        #     # nn.Dropout(0.5),
+        #     # nn.BatchNorm1d(2 * self.latent_dim),
+        #     nn.Linear(self.fc_input_size, self.latent_dim),
+        #     # nn.ReLU()
+        #     # nn.Softplus()
+        # )
  
     def forward(self, x):
         for i in range(len(self.layers)):
