@@ -70,7 +70,7 @@ class Encoder(nn.Module):
         for i in range(len(self.layers)):
             x = self.layers[i](x)
         x = x.view(-1, self.fc_input_size)
-        return self.fc_mu(x), self.fc_logvar(x)
+        return self.fc_mu(x), self.fc_var(x)
 
 
 class Decoder(nn.Module):

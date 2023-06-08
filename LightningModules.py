@@ -12,6 +12,7 @@ import lightning.pytorch as pl
 from lightning.pytorch.callbacks import Callback
 
 from kornia import tensor_to_image
+from kornia.losses import ssim_loss
 from microfilm.colorify import multichannel_to_rgb
 import numpy as np
 import wandb
@@ -104,21 +105,21 @@ class AutoEncoder(pl.LightningModule):
         self.eps = eps
         self.factor = factor
 
-    def reparameterized_sampling(self, mu, logvar):
-        std = torch.exp(logvar * 0.5)
+    def reparameterized_sampling(self, mu, var):
+        std = torch.pow(var, 0.5)
         eps = torch.randn_like(mu)
         sample = eps.mul(std).add_(mu)
         return sample
 
     def forward(self, x):
-        mu, logvar = self.encoder(x)
-        z = self.reparameterized_sampling(mu, logvar)
+        mu, var = self.encoder(x)
+        z = self.reparameterized_sampling(mu, var)
         x_hat = self.decoder(z)
         return x_hat
 
     def forward_embedding(self, x):
-        mu, logvar = self.encoder(x)
-        return mu, logvar
+        mu, var = self.encoder(x)
+        return mu, var
 
     def forward_decoding(self, z_batch):
         return self.decoder(z_batch)
@@ -127,6 +128,8 @@ class AutoEncoder(pl.LightningModule):
         x = batch
         x_hat = self.forward(x)
         loss = F.mse_loss(x_hat, x)
+        # loss = torch.log(1 + torch.pow(x_hat - x, 2)).mean()
+        # loss = ssim_loss(x, x_hat, 5, reduction="mean")
         if self.channels is not None:
             loss_dict = {}
             loss_dict["total"] = loss
@@ -180,7 +183,7 @@ class AutoEncoder(pl.LightningModule):
         self.predict_mode = mode
 
     def predict_step(self, batch, batch_idx):
-        # returns embeddings w two channels, first is mu, second is logvar
+        # returns embeddings w two channels, first is mu, second is var
         if self.predict_mode is None or self.predict_mode == "forward":
             return self.forward(batch)
         elif self.predict_mode == "embedding":
@@ -292,10 +295,10 @@ class EmbeddingLogger(Callback):
         input_imgs = input_imgs.to(pl_module.device)
         with torch.no_grad():
             pl_module.eval()
-            mu, logvar = pl_module.forward_embedding(input_imgs)
+            mu, var = pl_module.forward_embedding(input_imgs)
             pl_module.train()
         self.__x_logging_step(mu, trainer, "mu")
-        self.__x_logging_step(logvar, trainer, "logvar")
+        self.__x_logging_step(var, trainer, "var")
 
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
