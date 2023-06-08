@@ -127,8 +127,9 @@ class AutoEncoder(pl.LightningModule):
     def _shared_step(self, batch):
         x = batch
         x_hat = self.forward(x)
+        loss = F.mse_loss(x_hat, x)
         # loss = torch.log(1 + torch.pow(x_hat - x, 2)).mean()
-        loss = ssim_loss(x, x_hat, 5, reduction="mean")
+        # loss = ssim_loss(x, x_hat, 5, reduction="mean")
         if self.channels is not None:
             loss_dict = {}
             loss_dict["total"] = loss

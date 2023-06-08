@@ -55,7 +55,7 @@ config = {
     "split": (0.64, 0.16, 0.2),
     "lr": 1e-5,
     # "min_delta": 1e3,
-    "patience": 5,
+    "patience": 10,
     # "stopping_patience": 10,
     "epochs": args.epochs,
     "model": args.model,

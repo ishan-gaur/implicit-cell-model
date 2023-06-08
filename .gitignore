@@ -164,3 +164,6 @@ wandb/
 nb_images/
 
 *.png
+
+artifacts/
+*.gif
