@@ -54,14 +54,15 @@ config = {
     "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
     "lr": 1e-5,
-    # "min_delta": 1e3,
+    "eps": 1e-12,
+    "factor": 0.5,
     "patience": 10,
-    # "stopping_patience": 10,
+    # "min_delta": 1e3,
+    "stopping_patience": 10,
     "epochs": args.epochs,
     "model": args.model,
     "latent_dim": 512,
-    "eps": 1e-12,
-    "factor": 0.5,
+    "lambda": 0.01,
 }
 
 fucci_path = Path(args.data)
@@ -93,8 +94,8 @@ checkpoint_callback = ModelCheckpoint(
     auto_insert_metric_name=False,
 )
 
-# if config["patience"] > config["stopping_patience"]:
-    # raise ValueError("Patience must be less than stopping patience. LR will never get adjusted.")
+if config["patience"] > config["stopping_patience"]:
+    raise ValueError("Patience must be less than stopping patience. LR will never get adjusted.")
 
 # stopping_callback = EarlyStopping(
 #     monitor="val/loss",
@@ -102,6 +103,13 @@ checkpoint_callback = ModelCheckpoint(
 #     mode="min",
 #     patience=config["stopping_patience"],
 # )
+
+stopping_callback = EarlyStopping(
+    monitor="lr",
+    stopping_threshold=1e-7,
+    mode="min",
+    patience=config["stopping_patience"],
+)
 
 ##########################################################################################
 # Set up data, model, and trainer
@@ -129,6 +137,7 @@ if args.checkpoint is None:
         latent_dim=config["latent_dim"],
         eps=config["eps"],
         factor=config["factor"],
+        lambda_kl=config["lambda"],
     )
 else:
     model = AutoEncoder.load_from_checkpoint(args.checkpoint)

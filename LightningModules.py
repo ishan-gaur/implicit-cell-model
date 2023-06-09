@@ -220,6 +220,7 @@ class AutoEncoder(pl.LightningModule):
 
     def lr_scheduler_step(self, scheduler, metric):
         scheduler.step(metric)
+        # self.log("lr", scheduler._last_lr[0], on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
 
 class ReconstructionVisualization(Callback):
