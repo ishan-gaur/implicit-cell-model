@@ -92,6 +92,7 @@ class AutoEncoder(pl.LightningModule):
         channels=None,
         eps=1e-8,
         factor=0.1,
+        lambda_kl=0.1,
     ):
 
         super().__init__()
@@ -104,6 +105,7 @@ class AutoEncoder(pl.LightningModule):
         self.channels = channels
         self.eps = eps
         self.factor = factor
+        self.lambda_kl = lambda_kl
 
     def reparameterized_sampling(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -124,10 +126,21 @@ class AutoEncoder(pl.LightningModule):
     def forward_decoding(self, z_batch):
         return self.decoder(z_batch)
 
+    def loss_function(self, x, x_hat, mu, logvar):
+        mse_loss = F.mse_loss(x_hat, x)
+        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - torch.exp(logvar))
+        loss = mse_loss * ((1 - self.lambda_kl) + self.lambda_kl * kl_loss)
+        return loss
+
+
     def _shared_step(self, batch):
         x = batch
-        x_hat = self.forward(x)
-        loss = F.mse_loss(x_hat, x)
+        # x_hat = self.forward(x)
+        mu, logvar = self.encoder(x)
+        z = self.reparameterized_sampling(mu, logvar)
+        x_hat = self.decoder(z)
+        loss = self.loss_function(x, x_hat, mu, logvar)
+        # loss = F.mse_loss(x_hat, x)
         # loss = torch.log(1 + torch.pow(x_hat - x, 2)).mean()
         # loss = ssim_loss(x, x_hat, 5, reduction="mean")
         if self.channels is not None:
