@@ -50,7 +50,7 @@ config = {
     "imsize": 256,
     "nf": 128,
     "batch_size": 16,
-    "num_devices": 8,
+    "num_devices": 4,
     "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
     "lr": 1e-5,
