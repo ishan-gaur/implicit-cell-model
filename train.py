@@ -62,7 +62,7 @@ config = {
     "epochs": args.epochs,
     "model": args.model,
     "latent_dim": 512,
-    "lambda": 0.01,
+    # "lambda": 1e-6,
 }
 
 fucci_path = Path(args.data)
@@ -137,7 +137,7 @@ if args.checkpoint is None:
         latent_dim=config["latent_dim"],
         eps=config["eps"],
         factor=config["factor"],
-        lambda_kl=config["lambda"],
+        # lambda_kl=config["lambda"],
     )
 else:
     model = AutoEncoder.load_from_checkpoint(args.checkpoint)
@@ -167,7 +167,7 @@ trainer = pl.Trainer(
         # stopping_callback,
         LearningRateMonitor(logging_interval='step'),
         ReconstructionVisualization(channels=dm.get_channels()),
-        EmbeddingLogger(),
+        EmbeddingLogger(every_n_epochs=1)
     ]
 )
 

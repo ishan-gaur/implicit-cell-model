@@ -129,7 +129,8 @@ class AutoEncoder(pl.LightningModule):
     def loss_function(self, x, x_hat, mu, logvar):
         mse_loss = F.mse_loss(x_hat, x)
         kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - torch.exp(logvar))
-        loss = mse_loss * ((1 - self.lambda_kl) + self.lambda_kl * kl_loss)
+        # loss = mse_loss * ((1 - self.lambda_kl) + self.lambda_kl * kl_loss)
+        loss = mse_loss + kl_loss
         return loss
 
 
