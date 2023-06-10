@@ -133,6 +133,8 @@ if args.checkpoint is None:
 else:
     model = AutoEncoder.load_from_checkpoint(args.checkpoint)
 
+model = torch.compile(model)
+
 wandb_logger.watch(model, log="all", log_freq=10)
 
 print_with_time("Setting up trainer...")

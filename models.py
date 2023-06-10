@@ -67,8 +67,10 @@ class Encoder(nn.Module):
         # )
  
     def forward(self, x):
-        for i in range(len(self.layers)):
-            x = self.layers[i](x)
+        # for i in range(len(self.layers)):
+        #     x = self.layers[i](x)
+        for layer in self.layers:
+            x = layer(x)
         x = x.view(-1, self.fc_input_size)
         return self.fc_mu(x), self.fc_logvar(x)
 
@@ -112,8 +114,10 @@ class Decoder(nn.Module):
     def forward(self, z):
         z = self.fc(z)
         z = z.view(-1, self.nf * self.ch_mult[0], self.state_width, self.state_width)
-        for i in range(len(self.layers)):
-            z = self.layers[i](z)
+        # for i in range(len(self.layers)):
+        #     z = self.layers[i](z)
+        for layer in self.layers:
+            z = layer(z)
         return z
 
 
