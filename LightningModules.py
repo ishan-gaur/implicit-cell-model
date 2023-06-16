@@ -110,6 +110,9 @@ class AutoEncoder(pl.LightningModule):
     def reparameterized_sampling(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(mu)
+        if torch.isnan(std).any():
+            print("std is nan")
+            std = torch.clamp(std, min=self.eps, max=1e8)
         sample = eps.mul(std).add_(mu)
         return sample
 
@@ -128,22 +131,21 @@ class AutoEncoder(pl.LightningModule):
 
     def loss_function(self, x, x_hat, mu, logvar):
         mse_loss = F.mse_loss(x_hat, x)
-        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - torch.exp(logvar))
-        # loss = mse_loss * ((1 - self.lambda_kl) + self.lambda_kl * kl_loss)
+        var = torch.exp(logvar)
+        covar = torch.diag_embed(var)
+        # kl_loss = torch.sum(logvar) + torch.sum(torch.inverse(covar)) + torch.sum(mu.pow(2))
+        kl_loss = torch.sum(logvar) + torch.sum(torch.linalg.inv(covar)) + torch.sum(mu.pow(2))
         loss = mse_loss + kl_loss
+        # loss = mse_loss
         return loss
 
 
     def _shared_step(self, batch):
         x = batch
-        # x_hat = self.forward(x)
         mu, logvar = self.encoder(x)
         z = self.reparameterized_sampling(mu, logvar)
         x_hat = self.decoder(z)
         loss = self.loss_function(x, x_hat, mu, logvar)
-        # loss = F.mse_loss(x_hat, x)
-        # loss = torch.log(1 + torch.pow(x_hat - x, 2)).mean()
-        # loss = ssim_loss(x, x_hat, 5, reduction="mean")
         if self.channels is not None:
             loss_dict = {}
             loss_dict["total"] = loss

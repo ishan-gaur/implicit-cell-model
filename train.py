@@ -50,15 +50,15 @@ config = {
     "imsize": 256,
     "nf": 128,
     "batch_size": 16,
-    "num_devices": 4,
+    "num_devices": 8,
     "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
-    "lr": 1e-5,
+    "lr": 5e-5,
     "eps": 1e-12,
     "factor": 0.5,
-    "patience": 50,
+    "patience": 10,
     # "min_delta": 1e3,
-    "stopping_patience": 50,
+    "stopping_patience": 10,
     "epochs": args.epochs,
     "model": args.model,
     "latent_dim": 512,
@@ -142,7 +142,7 @@ if args.checkpoint is None:
 else:
     model = AutoEncoder.load_from_checkpoint(args.checkpoint)
 
-model = torch.compile(model)
+# model = torch.compile(model)
 
 wandb_logger.watch(model, log="all", log_freq=10)
 
