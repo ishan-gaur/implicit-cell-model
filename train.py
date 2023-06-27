@@ -23,7 +23,6 @@ torch.set_float32_matmul_precision('medium')
 
 parser = argparse.ArgumentParser(description="Train a model on the FUCCI dataset.",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-# parser.add_argument("-s", "--single", action="store_true", help="train single model")
 parser.add_argument("-m", "--model", help="specify which model to train: reference, fucci, or total")
 parser.add_argument("-f", "--data", required=True, help="path to dataset")
 parser.add_argument("-r", "--reason", required=True, help="reason for this run")
@@ -33,9 +32,6 @@ parser.add_argument("-e", "--epochs", type=int, default=100, help="maximum numbe
 parser.add_argument("-l", "--checkpoint", help="path to checkpoint to load from")
 
 args = parser.parse_args()
-
-# if not args.single:
-#     raise NotImplementedError("Only single model training is supported at this time.")
 
 if args.model not in ["reference", "fucci", "total"]:
     raise ValueError("Model must be one of: reference, fucci, total")
