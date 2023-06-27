@@ -66,7 +66,7 @@ def cell_masks_warn(dapi, gamma_tubulin):
 # TODO: currently not adding a way to access the original split structure
 class FUCCIDataset(Dataset):
     """
-    Images are is DAPI, gamma-tubulin, Geminin, and CDT1 order
+    Images are in DAPI, gamma-tubulin, Geminin, CDT1 order
     Geminin is a green fluorescent protein that is present during the S and G2 phases of the cell cycle
     CDT1 is a red fluorescent protein that is present during the G1 and S phases of the cell cycle
     DAPI is a blue fluorescent protein that binds to DNA

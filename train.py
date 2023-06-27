@@ -11,6 +11,7 @@ from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 
 from LightningModules import AutoEncoder, FUCCIDataModule
 from LightningModules import ReconstructionVisualization, EmbeddingLogger
+from Dataset import MultiModalDataModule, ImageChannelDataset
 from models import Encoder, Decoder
 
 ##########################################################################################
@@ -69,9 +70,9 @@ fucci_path = Path(args.data)
 project_name = f"FUCCI_{args.model}_VAE"
 log_folder = Path(f"/data/ishang/fucci_vae/{project_name}_{time.strftime('%Y_%m_%d_%H_%M')}")
 if not log_folder.exists():
-    os.mkdir(log_folder)
-with open(log_folder / "reason.txt", "w") as f:
-    f.write(args.reason)
+    os.makedirs(log_folder, exist_ok=True)
+    with open(log_folder / "reason.txt", "w") as f:
+        f.write(args.reason)
 lightning_dir = log_folder / "lightning_logs"
 wandb_dir = log_folder
 
@@ -116,14 +117,20 @@ stopping_callback = EarlyStopping(
 ##########################################################################################
 
 print_with_time("Setting up data module...")
-dm = FUCCIDataModule(
-    data_dir=fucci_path,
-    dataset=args.model,
-    imsize=config["imsize"],
-    split=config["split"],
-    batch_size=config["batch_size"],
-    num_workers=config["num_workers"]
-)
+if args.model == "total":
+    channel_names = ["dapi", "tubulin", "geminin", "cdt1"]
+    datasets = [ImageChannelDataset(fucci_path, c) for c in channel_names]
+    dm = MultiModalDataModule(datasets, "combined", (0.64, 0.16, 0.2), config["batch_size"], config["num_workers"])
+    dm.setup("combined")
+else:
+    dm = FUCCIDataModule(
+        data_dir=fucci_path,
+        dataset=args.model,
+        imsize=config["imsize"],
+        split=config["split"],
+        batch_size=config["batch_size"],
+        num_workers=config["num_workers"]
+    )
 
 print_with_time("Setting up Autoencoder...")
 if args.checkpoint is None:
