@@ -119,9 +119,9 @@ stopping_callback = EarlyStopping(
 print_with_time("Setting up data module...")
 if args.model == "total":
     channel_names = ["dapi", "tubulin", "geminin", "cdt1"]
-    datasets = [ImageChannelDataset(fucci_path, c) for c in channel_names]
-    dm = MultiModalDataModule(datasets, "combined", (0.64, 0.16, 0.2), config["batch_size"], config["num_workers"])
-    dm.setup("combined")
+    dataset_dirs = [fucci_path for _ in range(len(channel_names))]
+    colors = ["blue", "yellow", "green", "red"]
+    dm = MultiModalDataModule(dataset_dirs, channel_names, colors, "combined", (0.64, 0.16, 0.2), config["batch_size"], config["num_workers"])
 else:
     dm = FUCCIDataModule(
         data_dir=fucci_path,

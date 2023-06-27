@@ -27,25 +27,36 @@ class ImageChannelDataset(Dataset):
 
 
 class MultiModalDataModule(LightningDataModule):
-    def __init__(self, datasets, mode, split, batch_size, num_workers):
+    """
+    Data module to present multiple image channels simultaneously.
+    The behavior can be customized by setting the mode. The modes are:
+    - paired: the images are paired by index.
+    """
+    def __init__(self, dataset_dirs, channel_names, colors, mode, split, batch_size, num_workers):
         super().__init__()
-        self.datasets = [dataset[:] for dataset in datasets]
-        self.channel_names = [dataset.channel_name for dataset in datasets]
+        self.datasets = [torch.load(dir / f"{channel_name}.pt") for dir, channel_name in zip(dataset_dirs, channel_names)]
+        self.channel_names = channel_names
+        self.colors = colors
+        self.mode = mode
         self.split = split
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.mode = mode
     
         if self.mode == "paired":
+            if not all([len(self.datasets[0]) == len(d) for d in self.datasets]):
+                raise ValueError("All datasets must have the same length. Got lengths: ", [len(d) for d in self.datasets])
             # stack should give us (modalities, samples, ...)
             # then swapaxes should give us (samples, modalities, ...) so that they are paired
             self.dataset = torch.stack(self.datasets).swapaxes(0, 1)
         elif self.mode == "unpaired":
             # stack should give us (modalities, samples, ...)
+            # for images this would be a 5D tensor
+            # then [:, None, ...] should give us an empty channel index
             self.dataset = torch.stack(self.datasets)[:, None, ...]
             raise NotImplementedError("Unpaired mode not implemented yet.")
         elif self.mode == "combined":
-            self.dataset = torch.cat(self.datasets)[:, None, ...]
+            # just combines all the samples into one big tensor
+            self.dataset = torch.cat(self.datasets)
         else:
             raise ValueError(f"Mode must be one of {self.modes()}. Got {mode}.")
 
