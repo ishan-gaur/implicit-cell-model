@@ -47,8 +47,8 @@ config = {
     "imsize": 256,
     "nf": 128,
     "batch_size": 16,
-    "num_devices": 8,
-    "num_workers": 8,
+    "num_devices": 1,
+    "num_workers": 1,
     "split": (0.64, 0.16, 0.2),
     "lr": 5e-5,
     "eps": 1e-12,
@@ -131,12 +131,12 @@ else:
 print_with_time("Setting up Autoencoder...")
 if args.checkpoint is None:
     model = AutoEncoder(
-        nc=2 if args.model in ["reference", "fucci"] else 4,
+        nc=2 if args.model in ["reference", "fucci"] else 1,
         nf=config["nf"],
         imsize=config["imsize"],
         lr=config["lr"],
         patience=config["patience"],
-        channels=dm.get_channels(),
+        channels=["channel"] if args.model == "total" else dm.get_channels(),
         latent_dim=config["latent_dim"],
         eps=config["eps"],
         factor=config["factor"],
@@ -169,7 +169,7 @@ trainer = pl.Trainer(
         checkpoint_callback,
         # stopping_callback,
         LearningRateMonitor(logging_interval='step'),
-        ReconstructionVisualization(channels=dm.get_channels()),
+        ReconstructionVisualization(channels=dm.get_channels() if args.model != "total" else None),
         EmbeddingLogger(every_n_epochs=1)
     ]
 )

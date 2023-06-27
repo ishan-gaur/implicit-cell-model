@@ -276,18 +276,18 @@ class ReconstructionVisualization(Callback):
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
             input_imgs = trainer.datamodule.train_dataloader().dataset[:self.num_images]
-            cmap = trainer.datamodule.dataset.channel_colors()
+            cmap = trainer.datamodule.dataset.channel_colors() if hasattr(trainer.datamodule.dataset, "channel_colors") else None
             self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
             input_imgs = trainer.datamodule.val_dataloader().dataset[:self.num_images]
-            cmap = trainer.datamodule.dataset.channel_colors()
+            cmap = trainer.datamodule.dataset.channel_colors() if hasattr(trainer.datamodule.dataset, "channel_colors") else None
             self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
             
     def on_test_end(self, trainer, pl_module):
         input_imgs = trainer.datamodule.test_dataloader().dataset[:self.num_images]
-        cmap = trainer.datamodule.dataset.channel_colors()
+        cmap = trainer.datamodule.dataset.channel_colors() if hasattr(trainer.datamodule.dataset, "channel_colors") else None
         self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
 
 

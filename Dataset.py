@@ -50,13 +50,14 @@ class MultiModalDataModule(LightningDataModule):
             self.dataset = torch.stack(self.datasets).swapaxes(0, 1)
         elif self.mode == "unpaired":
             # stack should give us (modalities, samples, ...)
-            # for images this would be a 5D tensor
             # then [:, None, ...] should give us an empty channel index
+            # for images this would be a 5D tensor
             self.dataset = torch.stack(self.datasets)[:, None, ...]
             raise NotImplementedError("Unpaired mode not implemented yet.")
         elif self.mode == "combined":
             # just combines all the samples into one big tensor
-            self.dataset = torch.cat(self.datasets)
+            # then add an empty "channel" channel
+            self.dataset = torch.cat(self.datasets)[:, None, ...]
         else:
             raise ValueError(f"Mode must be one of {self.modes()}. Got {mode}.")
 
