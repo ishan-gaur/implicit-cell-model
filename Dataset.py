@@ -35,6 +35,13 @@ class MultiModalDataModule(LightningDataModule):
     def __init__(self, dataset_dirs, channel_names, colors, mode, split, batch_size, num_workers):
         super().__init__()
         self.datasets = [torch.load(dir / f"{channel_name}.pt") for dir, channel_name in zip(dataset_dirs, channel_names)]
+        self.datasets = []
+        for dir, channel_name in zip(dataset_dirs, channel_names):
+            num_shards = len(list(dir.glob(f"{channel_name}_*.pt")))
+            dataset = []
+            for i in range(num_shards):
+                dataset.append(torch.load(dir / f"{channel_name}_{i}.pt"))
+            self.datasets.append(torch.cat(dataset))
         self.channel_names = channel_names
         self.colors = colors
         self.mode = mode

@@ -125,6 +125,8 @@ class FUCCIDataset(Dataset):
                     continue
                 if "embedding" in split.stem:
                     continue
+                if ".pt" == split.suffix:
+                    continue
                 warnings.warn(f"Training split {split} is not a directory")
                 continue
 
@@ -342,6 +344,14 @@ class ChannelDatasetInMemory(FUCCIDatasetInMemory):
 
     def get_channel_names(self):
         return [self.channels[c] for c in self.channel_slice]
+    
+
+class TotalDatasetInMemory(FUCCIDatasetInMemory):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        shape = self.dataset_images.shape
+        self.dataset_images = self.dataset_images.reshape((-1, 1, shape[-2], shape[-1]))
+        print(shape, self.dataset_images.shape)
 
 
 class GemininDatasetInMemory(ChannelDatasetInMemory):

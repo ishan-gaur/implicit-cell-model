@@ -47,15 +47,17 @@ config = {
     "imsize": 256,
     "nf": 128,
     "batch_size": 16,
-    "num_devices": 1,
-    "num_workers": 1,
+    # "num_devices": 4,
+    "devices": list(range(4, torch.cuda.device_count())),
+    # "devices": [4],
+    "num_workers": 4,
     "split": (0.64, 0.16, 0.2),
     "lr": 5e-5,
     "eps": 1e-12,
     "factor": 0.5,
     "patience": 10,
     # "min_delta": 1e3,
-    "stopping_patience": 10,
+    "stopping_patience": 20,
     "epochs": args.epochs,
     "model": args.model,
     "latent_dim": 512,
@@ -113,20 +115,20 @@ stopping_callback = EarlyStopping(
 ##########################################################################################
 
 print_with_time("Setting up data module...")
-if args.model == "total":
-    channel_names = ["dapi", "tubulin", "geminin", "cdt1"]
-    dataset_dirs = [fucci_path for _ in range(len(channel_names))]
-    colors = ["blue", "yellow", "green", "red"]
-    dm = MultiModalDataModule(dataset_dirs, channel_names, colors, "combined", (0.64, 0.16, 0.2), config["batch_size"], config["num_workers"])
-else:
-    dm = FUCCIDataModule(
-        data_dir=fucci_path,
-        dataset=args.model,
-        imsize=config["imsize"],
-        split=config["split"],
-        batch_size=config["batch_size"],
-        num_workers=config["num_workers"]
-    )
+# if args.model == "total":
+    # channel_names = ["dapi", "tubulin", "geminin", "cdt1"]
+    # dataset_dirs = [fucci_path for _ in range(len(channel_names))]
+    # colors = ["blue", "yellow", "green", "red"]
+    # dm = MultiModalDataModule(dataset_dirs, channel_names, colors, "combined", (0.64, 0.16, 0.2), config["batch_size"], config["num_workers"])
+# else:
+dm = FUCCIDataModule(
+    data_dir=fucci_path,
+    dataset=args.model,
+    imsize=config["imsize"],
+    split=config["split"],
+    batch_size=config["batch_size"],
+    num_workers=config["num_workers"]
+)
 
 print_with_time("Setting up Autoencoder...")
 if args.checkpoint is None:
@@ -136,7 +138,7 @@ if args.checkpoint is None:
         imsize=config["imsize"],
         lr=config["lr"],
         patience=config["patience"],
-        channels=["channel"] if args.model == "total" else dm.get_channels(),
+        channels=None if args.model == "total" else dm.get_channels(),
         latent_dim=config["latent_dim"],
         eps=config["eps"],
         factor=config["factor"],
@@ -154,7 +156,7 @@ print_with_time("Setting up trainer...")
 trainer = pl.Trainer(
     default_root_dir=lightning_dir,
     accelerator="gpu" if not args.cpu else "cpu",
-    devices=config["num_devices"] if not args.cpu else "auto",
+    devices=config["devices"] if not args.cpu else "auto",
     # devices=[4, 5, 6, 7],
     limit_train_batches=0.1 if args.dev else None,
     limit_val_batches=0.1 if args.dev else None,

@@ -1,8 +1,10 @@
+from typing import List, Tuple
 from pathlib import Path
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS
 
 import torch
 from torch import optim
+from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, random_split
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -18,8 +20,8 @@ import numpy as np
 import wandb
 
 from FUCCIDataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
-from FUCCIDataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, FUCCIChannelDatasetInMemory
-from models import Encoder, Decoder
+from FUCCIDataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, FUCCIChannelDatasetInMemory, TotalDatasetInMemory
+from models import Encoder, Decoder, MapperIn, MapperOut
 
 class FUCCIDataModule(pl.LightningDataModule):
     def __init__(self, data_dir, dataset, batch_size, num_workers, 
@@ -41,13 +43,15 @@ class FUCCIDataModule(pl.LightningDataModule):
         if not in_memory:
             if dataset == "total":
                 self.dataset = FUCCIDataset(self.data_dir, imsize=self.imsize, transform=transform)
+                raise NotImplementedError("total dataset not implemented")
             if dataset == "reference":
                 self.dataset = ReferenceChannelDataset(self.data_dir, imsize=self.imsize, transform=transform)
             if dataset == "fucci":
                 self.dataset = FUCCIChannelDataset(self.data_dir, imsize=self.imsize, transform=transform)
         else:
             if dataset == "total":
-                self.dataset = FUCCIDatasetInMemory(self.data_dir, imsize=self.imsize, transform=transform)
+                # self.dataset = FUCCIDatasetInMemory(self.data_dir, imsize=self.imsize, transform=transform)
+                self.dataset = TotalDatasetInMemory(self.data_dir, imsize=self.imsize, transform=transform)
             if dataset == "reference":
                 self.dataset = ReferenceChannelDatasetInMemory(self.data_dir, imsize=self.imsize, transform=transform)
             if dataset == "fucci":
@@ -80,6 +84,63 @@ class FUCCIDataModule(pl.LightningDataModule):
         return self.dataset.get_channel_names()
 
 
+class Bundle(nn.Module):
+    def __init__(self, maps: List[Tuple[nn.Module, nn.Module]]):
+        super().__init__()
+        self.maps = maps
+
+
+
+class CrossModalAutoencoder(pl.LightningModule):
+    def __init__(self,
+        nc: int = 1, # number of channels
+        nf: int = 128, # number of filters
+        ch_mult: Tuple[int, ...] = (1, 2, 4, 8, 8, 8), # multiple of filters for each layer, each layer downsamples by 2
+        imsize: int = 256,
+        latent_dim: int = 512,
+        lr: float = 1e-6,
+        lr_eps: float = 1e-10, # minimum change in learning rate allowed (no update after this)
+        patience: int = 4, # number of epochs to wait before reducing lr
+        channels: List[str] = [], # names of the channels for each mapping
+        width_mult: Tuple[int, ...] = (2, 2), # width multiplier for each layer
+    ):
+
+        super().__init__()
+        self.save_hyperparameters()
+
+        self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim)
+        self.decoder = Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim)
+        self.ae_latent = latent_dim
+
+        self.lr = lr
+        self.lr_eps = lr_eps
+        self.patience = patience
+
+        self.channels = channels
+        self.width_mult = width_mult
+        self.maps = {}
+        for channel in self.channels:
+            self.maps[channel] = {"encode": MapperIn(self.ae_latent, self.width_mult),
+                                  "decode": MapperOut(self.ae_latent, self.width_mult)}
+
+    def add_mapping(self, channel):
+        self.channels.append(channel)
+        self.maps[channel] = {"encode": MapperIn(self.ae_latent, self.width_mult),
+                                "decode": MapperOut(self.ae_latent, self.width_mult)}
+
+    def reparameterized_sampling(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps.mul(std).add_(mu)
+
+    def encode(self, x):
+        mu, logvar = self.encoder(x)
+        z_common = mu
+        mu_channel, logvar_channel = z_common.reshape(len(self.bundle), -1)
+        z = self.reparameterized_sampling(mu, logvar)
+        return z, mu, logvar
+
+
 class AutoEncoder(pl.LightningModule):
     def __init__(self,
         nc=1,
@@ -99,8 +160,8 @@ class AutoEncoder(pl.LightningModule):
         self.save_hyperparameters()
 
         self.lr = lr
-        self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim)
-        self.decoder = Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim)
+        self.encoder = torch.compile(Encoder(nc, nf, ch_mult, imsize, latent_dim))
+        self.decoder = torch.compile(Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim))
         self.patience = patience
         self.channels = channels
         self.eps = eps
@@ -131,13 +192,14 @@ class AutoEncoder(pl.LightningModule):
 
     def loss_function(self, x, x_hat, mu, logvar):
         mse_loss = F.mse_loss(x_hat, x)
+        # var = torch.clamp(torch.exp(logvar), min=self.eps, max=1e8)
         var = torch.exp(logvar)
         covar = torch.diag_embed(var)
         # kl_loss = torch.sum(logvar) + torch.sum(torch.inverse(covar)) + torch.sum(mu.pow(2))
         kl_loss = torch.sum(logvar) + torch.sum(torch.linalg.inv(covar)) + torch.sum(mu.pow(2))
-        loss = mse_loss + kl_loss
+        loss = mse_loss + self.lambda_kl * kl_loss
         # loss = mse_loss
-        return loss
+        return loss, mse_loss, kl_loss
 
 
     def _shared_step(self, batch):
@@ -145,50 +207,38 @@ class AutoEncoder(pl.LightningModule):
         mu, logvar = self.encoder(x)
         z = self.reparameterized_sampling(mu, logvar)
         x_hat = self.decoder(z)
-        loss = self.loss_function(x, x_hat, mu, logvar)
+        loss, mse_loss, kl_loss = self.loss_function(x, x_hat, mu, logvar)
+        loss_dict = {"total": loss, "mse": mse_loss, "kl": kl_loss}
         if self.channels is not None:
-            loss_dict = {}
-            loss_dict["total"] = loss
             for i, channel in enumerate(self.channels):
                 loss_dict[channel] = F.mse_loss(x_hat[:,i,:,:], x[:,i,:,:])
-            loss = loss_dict
+        loss = loss_dict
         return loss, x_hat
+
+    def _shared_logging(self, loss, stage):
+        if isinstance(loss, dict):
+            for channel in loss:
+                if channel == "total":
+                    self.log(f"{stage}/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+                else:
+                    self.log(f"{stage}/loss_{channel}", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        else:
+            self.log(f"{stage}/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def training_step(self, batch, batch_idx):
         loss, x_hat = self._shared_step(batch)
-        if isinstance(loss, dict):
-            for channel in loss:
-                if channel == "total":
-                    self.log(f"train/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-                else:
-                    self.log(f"train/loss_{channel}", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        else:
-            self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        return loss['total']
+        self._shared_logging(loss, "train")
+        return loss["total"] if isinstance(loss, dict) else loss
 
     def validation_step(self, batch, batch_idx):
         loss, x_hat = self._shared_step(batch)
-        if isinstance(loss, dict):
-            for channel in loss:
-                if channel == "total":
-                    self.log(f"validate/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-                else:
-                    self.log(f"validate/loss_{channel}", loss[channel], on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        else:
-            self.log("validate/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        return loss['total']
+        self._shared_logging(loss, "validate")
+        return loss["total"] if isinstance(loss, dict) else loss
     
     def test_step(self, batch, batch_idx):
         loss, x_hat = self._shared_step(batch)
-        if isinstance(loss, dict):
-            for channel in loss:
-                if channel == "total":
-                    self.log(f"test/loss", loss[channel], on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-                else:
-                    self.log(f"test/loss_{channel}", loss[channel], on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        else:
-            self.log("test/loss", loss, sync_dist=True)
-        return loss['total']
+        self._shared_logging(loss, "test")
+        return loss["total"] if isinstance(loss, dict) else loss
 
     def list_predict_modes(self):
         return ["forward", "embedding", "sampling"]
@@ -276,13 +326,13 @@ class ReconstructionVisualization(Callback):
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
             input_imgs = trainer.datamodule.train_dataloader().dataset[:self.num_images]
-            cmap = trainer.datamodule.dataset.channel_colors() if hasattr(trainer.datamodule.dataset, "channel_colors") else None
+            cmap = trainer.datamodule.dataset.channel_colors() if input_imgs.shape[-3] > 1 else None
             self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
             input_imgs = trainer.datamodule.val_dataloader().dataset[:self.num_images]
-            cmap = trainer.datamodule.dataset.channel_colors() if hasattr(trainer.datamodule.dataset, "channel_colors") else None
+            cmap = trainer.datamodule.dataset.channel_colors() if input_imgs.shape[-3] > 1 else None
             self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
             
     def on_test_end(self, trainer, pl_module):

@@ -1,7 +1,56 @@
+from typing import Tuple
 import torch
 from torch.autograd import Variable
 from torch import nn
 import lightning.pytorch as pl
+
+
+class MapperIn(nn.Module):
+    def __init__(self, 
+        input_dim: int = 512, 
+        width_mult: Tuple[int, ...] = (2, 2)
+    ):
+        super().__init__()
+        layers = []
+        in_dim = input_dim
+        for i in range(len(width_mult)):
+            out_dim = int(input_dim * width_mult[i])
+            layers.append(torch.nn.Linear(in_dim, out_dim))
+            if i != len(width_mult) - 1:
+                layers.append(torch.nn.LeakyReLU(inplace=True))
+            in_dim = out_dim
+        self.encoder = torch.nn.Sequential(*layers)
+
+        latent_dim = input_dim * width_mult[-1]
+        self.fc_mu = torch.nn.Linear(latent_dim, latent_dim)
+        self.fc_logvar = torch.nn.Linear(latent_dim, latent_dim)
+
+    def forward(self, x):
+        x = self.encoder(x)
+        return self.fc_mu(x), self.fc_logvar(x)
+
+
+class MapperOut(nn.Module):
+    def __init__(self,
+        input_dim: int = 512,
+        width_mult: Tuple[int, ...] = (2, 2)
+    ):
+        super().__init__()
+        layers = []
+        out_dim = input_dim
+        for i in range(len(width_mult) - 1, -1, -1):
+            in_dim = int(input_dim * width_mult[i])
+            layers.append(torch.nn.Linear(in_dim, out_dim))
+            if i != 0:
+                layers.append(torch.nn.LeakyReLU(inplace=True))
+            else:
+                layers.append(torch.nn.Sigmoid())
+            out_dim = in_dim
+        self.decoder = torch.nn.Sequential(*layers)
+
+    def forward(self, z):
+        return self.decoder(z)
+
 
 class Encoder(nn.Module):
     def __init__(self, nc=1, nf=128, ch_mult=(1, 2, 4, 8, 8, 8), imsize=256, latent_dim=512):
@@ -14,7 +63,6 @@ class Encoder(nn.Module):
         batchnorm: use batch normalization
         """
         super().__init__()
-        # self.save_hyperparameters()
 
         if imsize < 2 ** len(ch_mult):
             raise ValueError("Image size not large enough to accommodate the number of downsampling layers: len(ch_mult).")
@@ -43,32 +91,11 @@ class Encoder(nn.Module):
         state_width = imsize // (2 ** len(self.ch_mult))
         state_area = state_width ** 2
         self.fc_input_size = self.nf * ch_mult[-1] * state_area
-        # to retrieve mean and variance of predicted latent distribution
-        # self.fc = nn.Sequential(
-        #     nn.Dropout(0.5),
-        #     nn.Linear(self.fc_input_size, 2 * self.latent_dim),
-        #     nn.LeakyReLU(inplace=True),
-        # )
 
         self.fc_mu = nn.Linear(self.fc_input_size, self.latent_dim)
-        # self.fc_mu = nn.Sequential
-        #     # nn.Dropout(0.5),
-        #     # nn.BatchNorm1d(2 * self.latent_dim),
-        #     nn.Linear(self.fc_input_size, self.latent_dim),
-        # )
-
         self.fc_logvar = nn.Linear(self.fc_input_size, self.latent_dim)
-        # self.fc_logvar = nn.Sequential(
-        #     # nn.Dropout(0.5),
-        #     # nn.BatchNorm1d(2 * self.latent_dim),
-        #     nn.Linear(self.fc_input_size, self.latent_dim),
-        #     # nn.ReLU()
-        #     # nn.Softplus()
-        # )
  
     def forward(self, x):
-        # for i in range(len(self.layers)):
-        #     x = self.layers[i](x)
         for layer in self.layers:
             x = layer(x)
         x = x.view(-1, self.fc_input_size)
@@ -78,7 +105,6 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, nc=1, nf=128, ch_mult=(8, 8, 8, 4, 2, 1), imsize=256, latent_dim=512):
         super().__init__()
-        # self.save_hyperparameters()
 
         if imsize < 2 ** len(ch_mult):
             raise ValueError("Image size not large enough to accommodate the number of downsampling layers: len(ch_mult).")
@@ -106,7 +132,7 @@ class Decoder(nn.Module):
                 nn.Sequential(
                     nn.BatchNorm2d(in_ch),
                     nn.ConvTranspose2d(in_ch, out_ch, 4, 2, 1),
-                    nn.LeakyReLU(inplace=True)
+                    nn.LeakyReLU(inplace=True) if depth > 1 else nn.Sigmoid()
                 )
             )
             out_ch = in_ch
@@ -114,8 +140,6 @@ class Decoder(nn.Module):
     def forward(self, z):
         z = self.fc(z)
         z = z.view(-1, self.nf * self.ch_mult[0], self.state_width, self.state_width)
-        # for i in range(len(self.layers)):
-        #     z = self.layers[i](z)
         for layer in self.layers:
             z = layer(z)
         return z
