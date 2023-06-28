@@ -136,7 +136,7 @@ class CrossModalAutoencoder(pl.LightningModule):
     def encode(self, x):
         mu, logvar = self.encoder(x)
         z_common = mu
-        mu_channel, logvar_channel = z_common.reshape(len(self.bundle), -1)
+        mu_channel, logvar_channel = z_common.reshape(None, -1) #TODO !!!!!!!!
         z = self.reparameterized_sampling(mu, logvar)
         return z, mu, logvar
 
