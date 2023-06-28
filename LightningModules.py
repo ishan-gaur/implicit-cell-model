@@ -1,3 +1,4 @@
+import random
 from typing import List, Tuple
 from pathlib import Path
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS
@@ -102,13 +103,13 @@ class CrossModalAutoencoder(pl.LightningModule):
         lr_eps: float = 1e-10, # minimum change in learning rate allowed (no update after this)
         patience: int = 4, # number of epochs to wait before reducing lr
         channels: List[str] = [], # names of the channels for each mapping
-        width_mult: Tuple[int, ...] = (2, 2), # width multiplier for each layer
+        map_widths: Tuple[int, ...] = (2, 2), # width multiplier for each layer
     ):
 
         super().__init__()
         self.save_hyperparameters()
 
-        self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim)
+        self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim, estimate_var=False)
         self.decoder = Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim)
         self.ae_latent = latent_dim
 
@@ -117,28 +118,58 @@ class CrossModalAutoencoder(pl.LightningModule):
         self.patience = patience
 
         self.channels = channels
-        self.width_mult = width_mult
+        self.map_widths = map_widths
         self.maps = {}
         for channel in self.channels:
-            self.maps[channel] = {"encode": MapperIn(self.ae_latent, self.width_mult),
-                                  "decode": MapperOut(self.ae_latent, self.width_mult)}
+            self.add_mapping(channel)
 
     def add_mapping(self, channel):
         self.channels.append(channel)
-        self.maps[channel] = {"encode": MapperIn(self.ae_latent, self.width_mult),
-                                "decode": MapperOut(self.ae_latent, self.width_mult)}
+        self.maps[channel] = {"encode": MapperIn(self.ae_latent, self.map_widths),
+                                "decode": MapperOut(self.ae_latent, self.map_widths)}
 
     def reparameterized_sampling(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return eps.mul(std).add_(mu)
 
-    def encode(self, x):
-        mu, logvar = self.encoder(x)
-        z_common = mu
-        mu_channel, logvar_channel = z_common.reshape(None, -1) #TODO !!!!!!!!
-        z = self.reparameterized_sampling(mu, logvar)
-        return z, mu, logvar
+    def encode(self, x, channel):
+        if channel not in self.channels:
+            raise ValueError(f"channel {channel} not in {self.channels}. Please add_mapping or check spelling.")
+        image_z = self.encoder(x)
+        mu, logvar = self.maps[channel]["encode"](image_z)
+        return mu, logvar
+    
+    def decode(self, z, channel):
+        if channel not in self.channels:
+            raise ValueError(f"channel {channel} not in {self.channels}. Please add_mapping or check spelling.")
+        image_z = self.maps[channel]["decode"](z)
+        image = self.decoder(z)
+        return image
+
+    def forward(self, x):
+        x_hat = {}
+        for channel, images in x.items():
+            mu, logvar = self.encode(images, channel)
+            z = self.reparameterized_sampling(mu, logvar)
+            x_hat[channel] = self.decode(z, channel)
+        return x_hat
+    
+    def training_step(self, batch, batch_idx):
+        # put all through encoding and calculate regularization term against prior
+        # for each channel select a random output channel and calculate regularization loss
+        embeddings = {}
+        for channel, images in batch.items():
+            mu, logvar = self.encode(images, channel)
+            embeddings[channel] = self.reparameterized_sampling(mu, logvar)
+        output_channels = random.sample(self.channels, len(self.channels))
+        x_hat = {channel: self.decode(embeddings[channel], output_channels[i]) for i, channel in enumerate(self.channels)}
+        x_target = {channel: batch[channel] for channel in output_channels}
+        x_hat = torch.cat([x_hat[channel] for channel in self.channels], dim=1)
+        x_target = torch.cat([x_target[channel] for channel in self.channels], dim=1)
+        loss = F.mse_loss(x_hat, x_target)
+        return loss
+
 
 
 class AutoEncoder(pl.LightningModule):
