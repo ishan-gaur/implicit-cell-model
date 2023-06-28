@@ -53,7 +53,7 @@ class MapperOut(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, nc=1, nf=128, ch_mult=(1, 2, 4, 8, 8, 8), imsize=256, latent_dim=512):
+    def __init__(self, nc=1, nf=128, ch_mult=(1, 2, 4, 8, 8, 8), imsize=256, latent_dim=512, estimate_var=True):
         """
         x should be CHW
         nc: number of channels in input
@@ -93,13 +93,17 @@ class Encoder(nn.Module):
         self.fc_input_size = self.nf * ch_mult[-1] * state_area
 
         self.fc_mu = nn.Linear(self.fc_input_size, self.latent_dim)
-        self.fc_logvar = nn.Linear(self.fc_input_size, self.latent_dim)
+        if estimate_var:
+            self.fc_logvar = nn.Linear(self.fc_input_size, self.latent_dim)
  
     def forward(self, x):
         for layer in self.layers:
             x = layer(x)
         x = x.view(-1, self.fc_input_size)
-        return self.fc_mu(x), self.fc_logvar(x)
+        if self.estimate_var:
+            return self.fc_mu(x), self.fc_logvar(x)
+        else:
+            return self.fc_mu(x)
 
 
 class Decoder(nn.Module):
