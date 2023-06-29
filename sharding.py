@@ -3,7 +3,7 @@ import torch
 from multiprocessing import Pool
 import sys
 
-dataset_dir = Path("/data/ishang/Fucci-dataset-v3_filtered/")
+dataset_dir = Path("/home/ishang/cross-modal-autoencoders/FUCCI-dev-data/")
 channel_names = ["dapi", "tubulin", "geminin", "cdt1"]
 
 shard_size = 1000

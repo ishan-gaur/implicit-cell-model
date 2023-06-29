@@ -9,7 +9,7 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 
-from LightningModules import AutoEncoder, FUCCIDataModule
+from LightningModules import AutoEncoder, FUCCIDataModule, CrossModalAutoencoder
 from LightningModules import ReconstructionVisualization, EmbeddingLogger
 from Dataset import MultiModalDataModule, ImageChannelDataset
 from models import Encoder, Decoder
@@ -23,7 +23,7 @@ torch.set_float32_matmul_precision('medium')
 
 parser = argparse.ArgumentParser(description="Train a model on the FUCCI dataset.",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument("-m", "--model", help="specify which model to train: reference, fucci, or total")
+parser.add_argument("-m", "--model", help="specify which model to train: reference, fucci, total, or multi")
 parser.add_argument("-f", "--data", required=True, help="path to dataset")
 parser.add_argument("-r", "--reason", required=True, help="reason for this run")
 parser.add_argument("-d", "--dev", action="store_true", help="run in development mode uses 10 percent of data")
@@ -33,7 +33,7 @@ parser.add_argument("-l", "--checkpoint", help="path to checkpoint to load from"
 
 args = parser.parse_args()
 
-if args.model not in ["reference", "fucci", "total"]:
+if args.model not in ["reference", "fucci", "total", "multi"]:
     raise ValueError("Model must be one of: reference, fucci, total")
 
 if args.checkpoint is not None:
@@ -61,7 +61,7 @@ config = {
     "epochs": args.epochs,
     "model": args.model,
     "latent_dim": 512,
-    # "lambda": 1e-6,
+    "lambda": 0
 }
 
 fucci_path = Path(args.data)
@@ -115,37 +115,60 @@ stopping_callback = EarlyStopping(
 ##########################################################################################
 
 print_with_time("Setting up data module...")
-# if args.model == "total":
-    # channel_names = ["dapi", "tubulin", "geminin", "cdt1"]
-    # dataset_dirs = [fucci_path for _ in range(len(channel_names))]
-    # colors = ["blue", "yellow", "green", "red"]
-    # dm = MultiModalDataModule(dataset_dirs, channel_names, colors, "combined", (0.64, 0.16, 0.2), config["batch_size"], config["num_workers"])
-# else:
-dm = FUCCIDataModule(
-    data_dir=fucci_path,
-    dataset=args.model,
-    imsize=config["imsize"],
-    split=config["split"],
-    batch_size=config["batch_size"],
-    num_workers=config["num_workers"]
-)
-
-print_with_time("Setting up Autoencoder...")
-if args.checkpoint is None:
-    model = AutoEncoder(
-        nc=2 if args.model in ["reference", "fucci"] else 1,
-        nf=config["nf"],
-        imsize=config["imsize"],
-        lr=config["lr"],
-        patience=config["patience"],
-        channels=None if args.model == "total" else dm.get_channels(),
-        latent_dim=config["latent_dim"],
-        eps=config["eps"],
-        factor=config["factor"],
-        # lambda_kl=config["lambda"],
+if args.model == "multi":
+    channel_names = ["dapi", "tubulin", "geminin", "cdt1"]
+    dataset_dirs = [fucci_path for _ in range(len(channel_names))]
+    colors = ["blue", "yellow", "green", "red"]
+    dm = MultiModalDataModule(
+        dataset_dirs,
+        channel_names,
+        colors,
+        "paired",
+        (0.64, 0.16, 0.2),
+        config["batch_size"],
+        config["num_workers"]
     )
 else:
-    model = AutoEncoder.load_from_checkpoint(args.checkpoint)
+    dm = FUCCIDataModule(
+        data_dir=fucci_path,
+        dataset=args.model,
+        imsize=config["imsize"],
+        split=config["split"],
+        batch_size=config["batch_size"],
+        num_workers=config["num_workers"]
+    )
+
+print_with_time("Setting up Autoencoder...")
+if args.model == "multi":
+    model = CrossModalAutoencoder(
+        nc=1,
+        nf=config["nf"],
+        ch_mult=(1, 2, 4, 8, 8, 8),
+        imsize=config["imsize"],
+        latent_dim=config["latent_dim"],
+        lr=config["lr"],
+        lr_eps=config["eps"],
+        patience=config["patience"],
+        channels=dm.get_channels(),
+        # map_widths=(2, 2),
+        map_widths=(1,),
+    )
+else:
+    if args.checkpoint is None:
+        model = AutoEncoder(
+            nc=2 if args.model in ["reference", "fucci"] else 1,
+            nf=config["nf"],
+            imsize=config["imsize"],
+            lr=config["lr"],
+            patience=config["patience"],
+            channels=None if args.model == "total" else dm.get_channels(),
+            latent_dim=config["latent_dim"],
+            eps=config["eps"],
+            factor=config["factor"],
+            lambda_kl=config["lambda"],
+        )
+    else:
+        model = AutoEncoder.load_from_checkpoint(args.checkpoint)
 
 # model = torch.compile(model)
 
@@ -171,8 +194,10 @@ trainer = pl.Trainer(
         checkpoint_callback,
         # stopping_callback,
         LearningRateMonitor(logging_interval='step'),
-        ReconstructionVisualization(channels=dm.get_channels() if args.model != "total" else None),
-        EmbeddingLogger(every_n_epochs=1)
+        ReconstructionVisualization(channels=None if args.model == "total" else dm.get_channels(),
+                                    mode="multi" if args.model == "multi" else "single"),
+        EmbeddingLogger(every_n_epochs=1,
+                        mode="multi" if args.model == "multi" else "single")
     ]
 )
 

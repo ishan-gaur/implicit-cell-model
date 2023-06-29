@@ -91,7 +91,6 @@ class Bundle(nn.Module):
         self.maps = maps
 
 
-
 class CrossModalAutoencoder(pl.LightningModule):
     def __init__(self,
         nc: int = 1, # number of channels
@@ -109,7 +108,8 @@ class CrossModalAutoencoder(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim, estimate_var=False)
+        # self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim, estimate_var=False)
+        self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim)
         self.decoder = Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim)
         self.ae_latent = latent_dim
 
@@ -136,7 +136,8 @@ class CrossModalAutoencoder(pl.LightningModule):
     def encode(self, x, channel):
         if channel not in self.channels:
             raise ValueError(f"channel {channel} not in {self.channels}. Please add_mapping or check spelling.")
-        image_z = self.encoder(x)
+        # image_z = self.encoder(x)
+        image_z, _ = self.encoder(x)
         mu, logvar = self.maps[channel]["encode"](image_z)
         return mu, logvar
     
@@ -169,7 +170,6 @@ class CrossModalAutoencoder(pl.LightningModule):
         x_target = torch.cat([x_target[channel] for channel in self.channels], dim=1)
         loss = F.mse_loss(x_hat, x_target)
         return loss
-
 
 
 class AutoEncoder(pl.LightningModule):
@@ -224,13 +224,14 @@ class AutoEncoder(pl.LightningModule):
     def loss_function(self, x, x_hat, mu, logvar):
         mse_loss = F.mse_loss(x_hat, x)
         # var = torch.clamp(torch.exp(logvar), min=self.eps, max=1e8)
-        var = torch.exp(logvar)
-        covar = torch.diag_embed(var)
         # kl_loss = torch.sum(logvar) + torch.sum(torch.inverse(covar)) + torch.sum(mu.pow(2))
-        kl_loss = torch.sum(logvar) + torch.sum(torch.linalg.inv(covar)) + torch.sum(mu.pow(2))
-        loss = mse_loss + self.lambda_kl * kl_loss
-        # loss = mse_loss
-        return loss, mse_loss, kl_loss
+        # var = torch.exp(logvar)
+        # covar = torch.diag_embed(var)
+        # kl_loss = torch.sum(logvar) + torch.sum(torch.linalg.inv(covar)) + torch.sum(mu.pow(2))
+        # loss = mse_loss + self.lambda_kl * kl_loss
+        loss = mse_loss
+        # return loss, mse_loss, kl_loss
+        return loss, mse_loss, 0
 
 
     def _shared_step(self, batch):
@@ -308,11 +309,12 @@ class AutoEncoder(pl.LightningModule):
 
 
 class ReconstructionVisualization(Callback):
-    def __init__(self, num_images=8, every_n_epochs=5, channels=None):
+    def __init__(self, num_images=8, every_n_epochs=5, channels=None, mode="single"):
         super().__init__()
         self.num_images = num_images
         self.every_n_epochs = every_n_epochs
         self.channels = channels
+        self.mode = mode
 
     def __shared_reconstruction_step(self, input_imgs, pl_module, cmap):
         input_imgs = input_imgs.to(pl_module.device)
@@ -354,11 +356,25 @@ class ReconstructionVisualization(Callback):
                         caption=f"Original and reconstructed {channel} images")
                 })
 
+    def __shared_logging_dispatch(self, dataloader, pl_module, trainer):
+        if self.mode == "multi":
+            for channel in dataloader.get_channels():
+                input_imgs = dataloader.train_dataloader().iterables[channel][:self.num_images]
+                cmap = None
+                self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
+
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
-            input_imgs = trainer.datamodule.train_dataloader().dataset[:self.num_images]
-            cmap = trainer.datamodule.dataset.channel_colors() if input_imgs.shape[-3] > 1 else None
-            self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
+            if self.mode == "multi":
+                for channel in trainer.datamodule.get_channels():
+                    input_imgs = trainer.datamodule.train_dataloader().iterables[channel][:self.num_images]
+                    print(input_imgs.shape)
+                    cmap = None
+                    self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
+            else:
+                input_imgs = trainer.datamodule.train_dataloader().dataset[:self.num_images]
+                cmap = trainer.datamodule.dataset.channel_colors() if input_imgs.shape[-3] > 1 else None
+                self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
@@ -373,41 +389,48 @@ class ReconstructionVisualization(Callback):
 
 
 class EmbeddingLogger(Callback):
-    def __init__(self, num_images=200, every_n_epochs=5):
+    def __init__(self, num_images=200, every_n_epochs=5, mode="single"):
         super().__init__()
         self.num_images = num_images
         self.every_n_epochs = every_n_epochs
+        self.mode = mode
 
-    def __x_logging_step(self, x, trainer, name):
+    def __x_logging_step(self, x, trainer, name, channel=""):
         trainer.logger.experiment.log({
-            f"{trainer.state.stage}/embedding_{name}_mean": x.mean()
+            f"{trainer.state.stage}/{channel}_embedding_{name}_mean": x.mean()
         })
         trainer.logger.experiment.log({
-            f"{trainer.state.stage}/embedding_{name}_min": x.min()
+            f"{trainer.state.stage}/{channel}_embedding_{name}_min": x.min()
         })
         trainer.logger.experiment.log({
-            f"{trainer.state.stage}/embedding_{name}_max": x.max()
+            f"{trainer.state.stage}/{channel}_embedding_{name}_max": x.max()
         })
 
-    def __shared_logging_step(self, input_imgs, pl_module, trainer):
+    def __shared_logging_step(self, input_imgs, pl_module, trainer, channel=""):
         input_imgs = input_imgs.to(pl_module.device)
         with torch.no_grad():
             pl_module.eval()
             mu, logvar = pl_module.forward_embedding(input_imgs)
             pl_module.train()
-        self.__x_logging_step(mu, trainer, "mu")
-        self.__x_logging_step(logvar, trainer, "logvar")
+        self.__x_logging_step(mu, trainer, "mu", channel)
+        self.__x_logging_step(logvar, trainer, "logvar", channel)
+
+    def __shared_logging_dispatch(self, dataloader, pl_module, trainer):
+        if self.mode == "multi":
+            for channel_data in dataloader.iterables:
+                input_imgs = data[:self.num_images]
+                self.__shared_logging_step(input_imgs, pl_module, trainer, channel)
+        else:
+            input_imgs = dataloader.dataset[:self.num_images]
+            self.__shared_logging_step(input_imgs, pl_module, trainer)
 
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
-            input_imgs = trainer.datamodule.train_dataloader().dataset[:self.num_images]
-            self.__shared_logging_step(input_imgs, pl_module, trainer)
+            self.__shared_logging_dispatch(trainer.datamodule.train_dataloader(), pl_module, trainer)
 
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
-            input_imgs = trainer.datamodule.val_dataloader().dataset[:self.num_images]
-            self.__shared_logging_step(input_imgs, pl_module, trainer)
+            self.__shared_logging_dispatch(trainer.datamodule.val_dataloader(), pl_module, trainer)
             
     def on_test_end(self, trainer, pl_module):
-        input_imgs = trainer.datamodule.test_dataloader().dataset[:self.num_images]
-        self.__shared_logging_step(input_imgs, pl_module, trainer)
+        self.__shared_logging_dispatch(trainer.datamodule.test_dataloader(), pl_module, trainer)
