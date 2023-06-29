@@ -72,7 +72,7 @@ class Encoder(nn.Module):
             raise ValueError("Latent dimension larger than the number of pixels in the image.")
  
         self.nc = nc
-        self.nf = nf * nc
+        self.nf = nf
         self.latent_dim = latent_dim
         self.ch_mult = ch_mult
  
@@ -118,7 +118,7 @@ class Decoder(nn.Module):
             raise ValueError("Latent dimension larger than the number of pixels in the image.")
  
         self.nc = nc
-        self.nf = nf * nc
+        self.nf = nf
         self.latent_dim = latent_dim
         self.ch_mult = ch_mult
 
