@@ -12,18 +12,24 @@ class MapperIn(nn.Module):
     ):
         super().__init__()
         layers = []
-        in_dim = input_dim
-        for i in range(len(width_mult)):
-            out_dim = int(input_dim * width_mult[i])
-            layers.append(torch.nn.Linear(in_dim, out_dim))
-            if i != len(width_mult) - 1:
-                layers.append(torch.nn.LeakyReLU(inplace=True))
-            in_dim = out_dim
-        self.encoder = torch.nn.Sequential(*layers)
+        # in_dim = input_dim
+        # for i in range(len(width_mult)):
+        #     out_dim = int(input_dim * width_mult[i])
+        #     layers.append(torch.nn.Linear(in_dim, out_dim))
+        #     if i != len(width_mult) - 1:
+        #         layers.append(torch.nn.LeakyReLU(inplace=True))
+        #     in_dim = out_dim
+        # self.encoder = torch.nn.Sequential(*layers)
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, input_dim),
+            nn.LeakyReLU(inplace=True)
+        )
 
-        latent_dim = input_dim * width_mult[-1]
-        self.fc_mu = torch.nn.Linear(latent_dim, latent_dim)
-        self.fc_logvar = torch.nn.Linear(latent_dim, latent_dim)
+        # latent_dim = input_dim * width_mult[-1]
+        # self.fc_mu = torch.nn.Linear(latent_dim, latent_dim)
+        # self.fc_logvar = torch.nn.Linear(latent_dim, latent_dim)
+        self.fc_mu = nn.Linear(input_dim, input_dim)
+        self.fc_logvar = nn.Linear(input_dim, input_dim)
 
     def forward(self, x):
         x = self.encoder(x)
