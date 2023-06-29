@@ -109,6 +109,57 @@ class Encoder(nn.Module):
         #     return self.fc_mu(x)
 
 
+class MuEncoder(nn.Module):
+    # def __init__(self, nc=1, nf=128, ch_mult=(1, 2, 4, 8, 8, 8), imsize=256, latent_dim=512, estimate_var=True):
+    def __init__(self, nc=1, nf=128, ch_mult=(1, 2, 4, 8, 8, 8), imsize=256, latent_dim=512):
+        """
+        x should be CHW
+        nc: number of channels in input
+        nf: number of discriminator filters per input channel
+        imsize: size of the input image (assumed square)
+        latent_variable_size: size of the latent space
+        batchnorm: use batch normalization
+        """
+        super().__init__()
+
+        if imsize < 2 ** len(ch_mult):
+            raise ValueError("Image size not large enough to accommodate the number of downsampling layers: len(ch_mult).")
+
+        if latent_dim > imsize ** 2:
+            raise ValueError("Latent dimension larger than the number of pixels in the image.")
+ 
+        self.nc = nc
+        self.nf = nf * nc
+        self.latent_dim = latent_dim
+        self.ch_mult = ch_mult
+ 
+        self.layers = nn.ModuleList()
+        in_ch = nc
+        for depth in range(len(ch_mult)):
+            out_ch = self.nf * self.ch_mult[depth]
+            self.layers.append(
+                nn.Sequential(
+                    nn.BatchNorm2d(in_ch),
+                    nn.Conv2d(in_ch, out_ch, 4, 2, 1),
+                    nn.LeakyReLU(inplace=True)
+                ) 
+            )
+            in_ch = out_ch
+
+
+        state_width = imsize // (2 ** len(self.ch_mult))
+        state_area = state_width ** 2
+        self.fc_input_size = self.nf * ch_mult[-1] * state_area
+
+        self.fc_mu = nn.Linear(self.fc_input_size, self.latent_dim)
+ 
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        x = x.view(-1, self.fc_input_size)
+        return self.fc_mu(x)
+
+
 class Decoder(nn.Module):
     def __init__(self, nc=1, nf=128, ch_mult=(8, 8, 8, 4, 2, 1), imsize=256, latent_dim=512):
         super().__init__()

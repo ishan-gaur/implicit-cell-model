@@ -22,7 +22,7 @@ import wandb
 
 from FUCCIDataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
 from FUCCIDataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, FUCCIChannelDatasetInMemory, TotalDatasetInMemory
-from models import Encoder, Decoder, MapperIn, MapperOut
+from models import Encoder, MuEncoder, Decoder, MapperIn, MapperOut
 
 class FUCCIDataModule(pl.LightningDataModule):
     def __init__(self, data_dir, dataset, batch_size, num_workers, 
@@ -114,8 +114,8 @@ class MultiModalAutoencoder(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        self.encoder = MuEncoder(nc, nf, ch_mult, imsize, latent_dim)
-        self.decoder = Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim)
+        self.encoder = torch.compile(MuEncoder(nc, nf, ch_mult, imsize, latent_dim))
+        self.decoder = torch.compile(Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim))
         self.ae_latent = latent_dim
 
         self.lr = lr
@@ -134,8 +134,8 @@ class MultiModalAutoencoder(pl.LightningModule):
     def add_mapping(self, channel):
         print(f"adding channel {channel}")
         self.channels.append(channel)
-        self.maps_in.append(MapperIn(self.ae_latent, self.map_widths))
-        self.maps_out.append(MapperOut(self.ae_latent, self.map_widths))
+        self.maps_in.append(torch.compile(MapperIn(self.ae_latent, self.map_widths)))
+        self.maps_out.append(torch.compile(MapperOut(self.ae_latent, self.map_widths)))
 
     def reparameterized_sampling(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -145,7 +145,7 @@ class MultiModalAutoencoder(pl.LightningModule):
     def encode(self, x, channel_idx):
         if channel_idx >= len(self.channels):
             raise ValueError(f"channel_idx {channel_idx} is out of range. Please add_mapping or check request.")
-        image_z, _ = self.encoder(x)
+        image_z = self.encoder(x)
         mu, logvar = self.maps_in[channel_idx](image_z)
         return mu, logvar
     

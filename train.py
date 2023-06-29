@@ -227,7 +227,6 @@ trainer = pl.Trainer(
         EmbeddingLogger(every_n_epochs=1, mode=args.model, channels=dm.get_channels() if args.model == "all" else None),
     ]
 )
-print(f"Running on {trainer.accelerator}")
 
 ##########################################################################################
 # Train and test model
