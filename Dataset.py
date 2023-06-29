@@ -100,8 +100,6 @@ class MultiModalDataModule(LightningDataModule):
             if not all([len(self.datasets[self.channel_names[0]]) == len(d) for _, d in self.datasets.items()]):
                 raise ValueError("All datasets must have the same length. Got lengths: ", [len(d) for d in self.datasets])
             indices, lengths = random_split_indices(self.datasets[self.channel_names[0]], self.split)
-            print("indices", indices)
-            print("lengths", lengths)
             self.data_train, self.data_val, self.data_test = {}, {}, {}
             for channel, dataset in self.datasets.items():
                 c = channel

@@ -43,20 +43,23 @@ class FUCCIDataModule(pl.LightningDataModule):
 
         if not in_memory:
             if dataset == "total":
-                self.dataset = FUCCIDataset(self.data_dir, imsize=self.imsize, transform=transform)
                 raise NotImplementedError("total dataset not implemented")
             if dataset == "reference":
                 self.dataset = ReferenceChannelDataset(self.data_dir, imsize=self.imsize, transform=transform)
             if dataset == "fucci":
                 self.dataset = FUCCIChannelDataset(self.data_dir, imsize=self.imsize, transform=transform)
+            if dataset == "all":
+                self.dataset = FUCCIDataset(self.data_dir, imsize=self.imsize, transform=transform)
         else:
             if dataset == "total":
-                # self.dataset = FUCCIDatasetInMemory(self.data_dir, imsize=self.imsize, transform=transform)
                 self.dataset = TotalDatasetInMemory(self.data_dir, imsize=self.imsize, transform=transform)
             if dataset == "reference":
                 self.dataset = ReferenceChannelDatasetInMemory(self.data_dir, imsize=self.imsize, transform=transform)
             if dataset == "fucci":
                 self.dataset = FUCCIChannelDatasetInMemory(self.data_dir, imsize=self.imsize, transform=transform)
+            if dataset == "all":
+                self.dataset = FUCCIDatasetInMemory(self.data_dir, imsize=self.imsize, transform=transform)
+                
 
         self.split = split
         if len(self.split) != 3:
@@ -83,12 +86,118 @@ class FUCCIDataModule(pl.LightningDataModule):
 
     def get_channels(self):
         return self.dataset.get_channel_names()
+    
+    def channel_colors(self):
+        return self.dataset.channel_colors()
 
 
 class Bundle(nn.Module):
     def __init__(self, maps: List[Tuple[nn.Module, nn.Module]]):
         super().__init__()
         self.maps = maps
+
+
+class MultiModalAutoencoder(pl.LightningModule):
+    def __init__(self,
+        nc: int = 1, # number of channels
+        nf: int = 128, # number of filters
+        ch_mult: Tuple[int, ...] = (1, 2, 4, 8, 8, 8), # multiple of filters for each layer, each layer downsamples by 2
+        imsize: int = 256,
+        latent_dim: int = 512,
+        lr: float = 1e-6,
+        lr_eps: float = 1e-10, # minimum change in learning rate allowed (no update after this)
+        patience: int = 4, # number of epochs to wait before reducing lr
+        channels: List[str] = [], # names of the channels for each mapping
+        map_widths: Tuple[int, ...] = (2, 2), # width multiplier for each layer
+    ):
+
+        super().__init__()
+        self.save_hyperparameters()
+
+        # self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim, estimate_var=False)
+        self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim)
+        self.decoder = Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim)
+        self.ae_latent = latent_dim
+
+        self.lr = lr
+        self.lr_eps = lr_eps
+        self.patience = patience
+
+        self.map_widths = map_widths
+        self.maps = []
+        self.channels = []
+        for channel in channels:
+            self.add_mapping(channel)
+
+        self.latent_dim = latent_dim * self.map_widths[-1]
+
+    def add_mapping(self, channel):
+        print(f"adding channel {channel}")
+        self.channels.append(channel)
+        self.maps.append({"encode": MapperIn(self.ae_latent, self.map_widths),
+                          "decode": MapperOut(self.ae_latent, self.map_widths)})
+
+    def reparameterized_sampling(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps.mul(std).add_(mu)
+
+    def encode(self, x, channel_idx):
+        if channel_idx >= len(self.channels):
+            raise ValueError(f"channel_idx {channel_idx} is out of range. Please add_mapping or check request.")
+        image_z, _ = self.encoder(x)
+        mu, logvar = self.maps[channel_idx]["encode"](image_z)
+        return mu, logvar
+    
+    def decode(self, z, channel_idx):
+        if channel_idx >= len(self.channels):
+            raise ValueError(f"channel_idx {channel_idx} is out of range. Please add_mapping or check request.")
+        image_z = self.maps[channel_idx]["decode"](z)
+        image = self.decoder(image_z)
+        return image
+
+    def forward(self, x):
+        # x is N x 4 x 256 x 256 (N four-channel images)
+        x = x.transpose(0, 1) # 4 x N x 256 x 256
+        x = x[:, :, None, ...] # 4 x N x 1 x 256 x 256
+        x_hat = torch.zeros_like(x)
+        for channel_idx in range(len(self.channels)):
+            mu, logvar = self.encode(x[channel_idx], channel_idx)
+            z = self.reparameterized_sampling(mu, logvar)
+            x_hat[channel_idx] = self.decode(z, channel_idx)
+        x_hat = x_hat.transpose(0, 1).squeeze() # N x 4 x 256 x 256
+        return x_hat
+    
+    def __shared_step(self, batch):
+        # put all through encoding and calculate regularization term against prior
+        # for each channel select a random output channel and calculate regularization loss
+        embeddings = torch.zeros((batch.shape[1], batch.shape[0], self.latent_dim)) # 4 x N x latent_dim
+        for channel, channel_batch in enumerate(batch):
+            mu, logvar = self.encode(channel_batch, channel)
+            embeddings[channel] = self.reparameterized_sampling(mu, logvar)
+        output_channels = random.sample(range(len(self.channels)), len(self.channels))
+        x_hat = torch.stack([self.decode(embeddings[i], j) for i, j in enumerate(output_channels)])
+        x_target = torch.stack([batch[channel] for channel in output_channels])
+        loss = F.mse_loss(x_hat, x_target) # TODO: log by input-output channel pairs too and aggregate over epoch
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        loss = self.__shared_step(batch)
+        self.log('train_loss', loss)
+        return loss
+    
+    def validation_step(self, batch, batch_idx):
+        loss = self.__shared_step(batch)
+        self.log('val_loss', loss)
+        return loss
+    
+    def test_step(self, batch, batch_idx):
+        loss = self.__shared_step(batch)
+        self.log('test_loss', loss)
+        return loss
+    
+    def configure_optimizers(self):
+        optimizer = optim.Adam(self.parameters(), lr=self.lr)
 
 
 class CrossModalAutoencoder(pl.LightningModule):
@@ -146,7 +255,7 @@ class CrossModalAutoencoder(pl.LightningModule):
         if channel not in self.channels:
             raise ValueError(f"channel {channel} not in {self.channels}. Please add_mapping or check spelling.")
         image_z = self.maps[channel]["decode"](z)
-        image = self.decoder(z)
+        image = self.decoder(image_z)
         return image
 
     def forward(self, x):
@@ -157,7 +266,7 @@ class CrossModalAutoencoder(pl.LightningModule):
             x_hat[channel] = self.decode(z, channel)
         return x_hat
     
-    def training_step(self, batch, batch_idx):
+    def __shared_step(self, batch, stage):
         # put all through encoding and calculate regularization term against prior
         # for each channel select a random output channel and calculate regularization loss
         embeddings = {}
@@ -170,13 +279,20 @@ class CrossModalAutoencoder(pl.LightningModule):
         x_hat = torch.cat([x_hat[channel] for channel in self.channels], dim=1)
         x_target = torch.cat([x_target[channel] for channel in self.channels], dim=1)
         loss = F.mse_loss(x_hat, x_target)
+        self.log(f"{stage}/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        loss = self.__shared_step(batch, "train")
         return loss
     
     def validation_step(self, batch, batch_idx):
-        return self.training_step(batch, batch_idx)
+        loss = self.__shared_step(batch, "val")
+        return loss
     
     def test_step(self, batch, batch_idx):
-        return self.training_step(batch, batch_idx)
+        loss = self.__shared_step(batch, "test")
+        return loss
     
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
@@ -377,7 +493,7 @@ class ReconstructionVisualization(Callback):
                 self.__shared_logging_step(input_imgs, pl_module, cmap, trainer, channel)
         else:
             input_imgs = dataloader.dataset[:self.num_images]
-            cmap = dataloader.dataset.channel_colors() if input_imgs.shape[-3] > 1 else None
+            cmap = trainer.datamodule.channel_colors() if input_imgs.shape[-3] > 1 else None
             self.__shared_logging_step(input_imgs, pl_module, cmap, trainer)
 
     def on_train_epoch_end(self, trainer, pl_module):

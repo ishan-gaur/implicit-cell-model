@@ -9,7 +9,7 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 
-from LightningModules import AutoEncoder, FUCCIDataModule, CrossModalAutoencoder
+from LightningModules import AutoEncoder, FUCCIDataModule, CrossModalAutoencoder, MultiModalAutoencoder
 from LightningModules import ReconstructionVisualization, EmbeddingLogger
 from Dataset import MultiModalDataModule, ImageChannelDataset
 from models import Encoder, Decoder
@@ -33,8 +33,9 @@ parser.add_argument("-l", "--checkpoint", help="path to checkpoint to load from"
 
 args = parser.parse_args()
 
-if args.model not in ["reference", "fucci", "total", "multi"]:
-    raise ValueError("Model must be one of: reference, fucci, total")
+model_options = ["reference", "fucci", "total", "all", "multi"]
+if args.model not in model_options:
+    raise ValueError(f"Model must be one of: {model_options}. Got {args.model} instead.")
 
 if args.checkpoint is not None:
     if not Path(args.checkpoint).exists():
@@ -140,6 +141,7 @@ else:
 
 print_with_time("Setting up Autoencoder...")
 if args.model == "multi":
+    print("Using CrossModalAutoencoder")
     model = CrossModalAutoencoder(
         nc=1,
         nf=config["nf"],
@@ -153,12 +155,36 @@ if args.model == "multi":
         # map_widths=(2, 2),
         map_widths=(1,),
     )
+elif args.model == "all":
+    print("Using MultiModalAutoencoder")
+    model = MultiModalAutoencoder(
+        nc=1,
+        nf=config["nf"],
+        ch_mult=(1, 2, 4, 8, 8, 8),
+        imsize=config["imsize"],
+        latent_dim=config["latent_dim"],
+        lr=config["lr"],
+        lr_eps=config["eps"],
+        patience=config["patience"],
+        channels=dm.get_channels(),
+        map_widths=(1,),
+    )
 else:
+    if args.model == "reference":
+        nc = 2
+    elif args.model == "fucci":
+        nc = 2
+    elif args.model == "total":
+        nc = 1
+    else:
+        nc = 4
+        nf = 32
     if args.checkpoint is None:
+        print("Using AutoEncoder")
         model = AutoEncoder(
-            nc=2 if args.model in ["reference", "fucci"] else 1,
-            nf=config["nf"],
-            imsize=config["imsize"],
+            nc=nc,
+            nf=config["nf"] if args.model != "all" else nf,
+            ch_mult=(1, 2, 4, 8, 8, 8),
             lr=config["lr"],
             patience=config["patience"],
             channels=None if args.model == "total" else dm.get_channels(),
@@ -168,6 +194,7 @@ else:
             lambda_kl=config["lambda"],
         )
     else:
+        print("Loading AutoEncoder from checkpoint")
         model = AutoEncoder.load_from_checkpoint(args.checkpoint)
 
 # model = torch.compile(model)
@@ -191,7 +218,7 @@ trainer = pl.Trainer(
     logger=wandb_logger,
     max_epochs=config["epochs"],
     gradient_clip_val=5e5,
-    gradient_clip_algorithm="value",
+    # gradient_clip_algorithm="norm",
     callbacks=[
         checkpoint_callback,
         # stopping_callback,
