@@ -179,8 +179,8 @@ print_with_time("Setting up trainer...")
 trainer = pl.Trainer(
     default_root_dir=lightning_dir,
     accelerator="gpu" if not args.cpu else "cpu",
-    devices=config["devices"] if not args.cpu else "auto",
-    # devices=[4, 5, 6, 7],
+    # devices=config["devices"] if not args.cpu else "auto",
+    devices=[4, 5, 6, 7],
     limit_train_batches=0.1 if args.dev else None,
     limit_val_batches=0.1 if args.dev else None,
     # fast_dev_run=10,
@@ -190,6 +190,8 @@ trainer = pl.Trainer(
     # log_every_n_steps=1,
     logger=wandb_logger,
     max_epochs=config["epochs"],
+    gradient_clip_val=5e5,
+    gradient_clip_algorithm="value",
     callbacks=[
         checkpoint_callback,
         # stopping_callback,
