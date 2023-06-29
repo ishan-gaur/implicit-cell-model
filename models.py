@@ -11,22 +11,22 @@ class MapperIn(nn.Module):
         width_mult: Tuple[int, ...] = (2, 2)
     ):
         super().__init__()
-        layers = []
+        self.layers = nn.ModuleList()
         in_dim = input_dim
         for i in range(len(width_mult)):
             out_dim = int(input_dim * width_mult[i])
-            layers.append(torch.nn.Linear(in_dim, out_dim))
+            self.layers.append(torch.nn.Linear(in_dim, out_dim))
             if i != len(width_mult) - 1:
-                layers.append(torch.nn.LeakyReLU(inplace=True))
+                self.layers.append(torch.nn.LeakyReLU(inplace=True))
             in_dim = out_dim
-        self.encoder = torch.nn.Sequential(*layers)
 
         latent_dim = input_dim * width_mult[-1]
         self.fc_mu = torch.nn.Linear(latent_dim, latent_dim)
         self.fc_logvar = torch.nn.Linear(latent_dim, latent_dim)
 
     def forward(self, x):
-        x = self.encoder(x)
+        for layer in self.layers:
+            x = layer(x)
         return self.fc_mu(x), self.fc_logvar(x)
 
 
@@ -36,20 +36,21 @@ class MapperOut(nn.Module):
         width_mult: Tuple[int, ...] = (2, 2)
     ):
         super().__init__()
-        layers = []
+        self.layers = nn.ModuleList()
         out_dim = input_dim
         for i in range(len(width_mult) - 1, -1, -1):
             in_dim = int(input_dim * width_mult[i])
-            layers.append(torch.nn.Linear(in_dim, out_dim))
+            self.layers.append(torch.nn.Linear(in_dim, out_dim))
             if i != 0:
-                layers.append(torch.nn.LeakyReLU(inplace=True))
+                self.layers.append(torch.nn.LeakyReLU(inplace=True))
             else:
-                layers.append(torch.nn.Sigmoid())
+                self.layers.append(torch.nn.Sigmoid())
             out_dim = in_dim
-        self.decoder = torch.nn.Sequential(*layers)
 
     def forward(self, z):
-        return self.decoder(z)
+        for layer in self.layers:
+            z = layer(z)
+        return z
 
 
 class Encoder(nn.Module):
@@ -88,6 +89,7 @@ class Encoder(nn.Module):
                 ) 
             )
             in_ch = out_ch
+
 
         state_width = imsize // (2 ** len(self.ch_mult))
         state_area = state_width ** 2

@@ -48,10 +48,10 @@ config = {
     "imsize": 256,
     "nf": 128,
     "batch_size": 16,
-    # "num_devices": 4,
-    "devices": list(range(4, torch.cuda.device_count())),
-    # "devices": [4],
-    "num_workers": 4,
+    "devices": [4],
+    "num_workers": 1,
+    # "devices": list(range(4, torch.cuda.device_count())),
+    # "num_workers": 4,
     "split": (0.64, 0.16, 0.2),
     "lr": 5e-5,
     "eps": 1e-12,
@@ -206,8 +206,7 @@ print_with_time("Setting up trainer...")
 trainer = pl.Trainer(
     default_root_dir=lightning_dir,
     accelerator="gpu" if not args.cpu else "cpu",
-    # devices=config["devices"] if not args.cpu else "auto",
-    devices=[4, 5, 6, 7],
+    devices=config["devices"] if not args.cpu else "auto",
     limit_train_batches=0.1 if args.dev else None,
     limit_val_batches=0.1 if args.dev else None,
     # fast_dev_run=10,
@@ -225,10 +224,10 @@ trainer = pl.Trainer(
         LearningRateMonitor(logging_interval='step'),
         ReconstructionVisualization(channels=None if args.model == "total" else dm.get_channels(),
                                     mode="multi" if args.model == "multi" else "single"),
-        EmbeddingLogger(every_n_epochs=1,
-                        mode="multi" if args.model == "multi" else "single")
+        EmbeddingLogger(every_n_epochs=1, mode=args.model, channels=dm.get_channels() if args.model == "all" else None),
     ]
 )
+print(f"Running on {trainer.accelerator}")
 
 ##########################################################################################
 # Train and test model

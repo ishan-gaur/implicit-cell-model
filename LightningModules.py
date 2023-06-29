@@ -114,8 +114,7 @@ class MultiModalAutoencoder(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        # self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim, estimate_var=False)
-        self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim)
+        self.encoder = MuEncoder(nc, nf, ch_mult, imsize, latent_dim)
         self.decoder = Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim)
         self.ae_latent = latent_dim
 
@@ -124,7 +123,8 @@ class MultiModalAutoencoder(pl.LightningModule):
         self.patience = patience
 
         self.map_widths = map_widths
-        self.maps = []
+        self.maps_in = nn.ModuleList()
+        self.maps_out = nn.ModuleList()
         self.channels = []
         for channel in channels:
             self.add_mapping(channel)
@@ -134,8 +134,8 @@ class MultiModalAutoencoder(pl.LightningModule):
     def add_mapping(self, channel):
         print(f"adding channel {channel}")
         self.channels.append(channel)
-        self.maps.append({"encode": MapperIn(self.ae_latent, self.map_widths),
-                          "decode": MapperOut(self.ae_latent, self.map_widths)})
+        self.maps_in.append(MapperIn(self.ae_latent, self.map_widths))
+        self.maps_out.append(MapperOut(self.ae_latent, self.map_widths))
 
     def reparameterized_sampling(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -146,13 +146,13 @@ class MultiModalAutoencoder(pl.LightningModule):
         if channel_idx >= len(self.channels):
             raise ValueError(f"channel_idx {channel_idx} is out of range. Please add_mapping or check request.")
         image_z, _ = self.encoder(x)
-        mu, logvar = self.maps[channel_idx]["encode"](image_z)
+        mu, logvar = self.maps_in[channel_idx](image_z)
         return mu, logvar
     
     def decode(self, z, channel_idx):
         if channel_idx >= len(self.channels):
             raise ValueError(f"channel_idx {channel_idx} is out of range. Please add_mapping or check request.")
-        image_z = self.maps[channel_idx]["decode"](z)
+        image_z = self.maps_out[channel_idx](z)
         image = self.decoder(image_z)
         return image
 
@@ -167,11 +167,25 @@ class MultiModalAutoencoder(pl.LightningModule):
             x_hat[channel_idx] = self.decode(z, channel_idx)
         x_hat = x_hat.transpose(0, 1).squeeze() # N x 4 x 256 x 256
         return x_hat
+
+    def forward_embedding(self, x):
+        # x is N x 4 x 256 x 256 (N four-channel images)
+        x = x.transpose(0, 1)
+        x = x[:, :, None, ...]
+        mu, logvar = [], []
+        for channel_idx in range(len(self.channels)):
+            m, l = self.encode(x[channel_idx], channel_idx)
+            mu.append(m)
+            logvar.append(l)
+        return mu, logvar
     
-    def __shared_step(self, batch):
+    def __shared_step(self, batch, stage):
         # put all through encoding and calculate regularization term against prior
         # for each channel select a random output channel and calculate regularization loss
-        embeddings = torch.zeros((batch.shape[1], batch.shape[0], self.latent_dim)) # 4 x N x latent_dim
+        embeddings = torch.zeros((batch.shape[1], batch.shape[0], self.latent_dim), device=self.device) # 4 x N x latent_dim
+        # batch is N x 4 x 256 x 256
+        batch = batch.transpose(0, 1) # 4 x N x 256 x 256
+        batch = batch[:, :, None, ...] # 4 x N x 1 x 256 x 256
         for channel, channel_batch in enumerate(batch):
             mu, logvar = self.encode(channel_batch, channel)
             embeddings[channel] = self.reparameterized_sampling(mu, logvar)
@@ -179,21 +193,19 @@ class MultiModalAutoencoder(pl.LightningModule):
         x_hat = torch.stack([self.decode(embeddings[i], j) for i, j in enumerate(output_channels)])
         x_target = torch.stack([batch[channel] for channel in output_channels])
         loss = F.mse_loss(x_hat, x_target) # TODO: log by input-output channel pairs too and aggregate over epoch
+        self.log(f'{stage}/loss', loss)
         return loss
 
     def training_step(self, batch, batch_idx):
-        loss = self.__shared_step(batch)
-        self.log('train_loss', loss)
+        loss = self.__shared_step(batch, "train")
         return loss
     
     def validation_step(self, batch, batch_idx):
-        loss = self.__shared_step(batch)
-        self.log('val_loss', loss)
+        loss = self.__shared_step(batch, "validate")
         return loss
     
     def test_step(self, batch, batch_idx):
-        loss = self.__shared_step(batch)
-        self.log('test_loss', loss)
+        loss = self.__shared_step(batch, "test")
         return loss
     
     def configure_optimizers(self):
@@ -507,11 +519,12 @@ class ReconstructionVisualization(Callback):
         self.__shared_logging_dispatch(trainer.datamodule.test_dataloader(), pl_module, trainer)
 
 class EmbeddingLogger(Callback):
-    def __init__(self, num_images=200, every_n_epochs=5, mode="single"):
+    def __init__(self, num_images=200, every_n_epochs=5, mode="single", channels=[]):
         super().__init__()
         self.num_images = num_images
         self.every_n_epochs = every_n_epochs
         self.mode = mode
+        self.channels = channels
 
     def __x_logging_step(self, x, trainer, name, channel=""):
         trainer.logger.experiment.log({
@@ -530,17 +543,26 @@ class EmbeddingLogger(Callback):
             pl_module.eval()
             mu, logvar = pl_module.forward_embedding(input_imgs)
             pl_module.train()
-        self.__x_logging_step(mu, trainer, "mu", channel)
-        self.__x_logging_step(logvar, trainer, "logvar", channel)
+        return mu, logvar
 
     def __shared_logging_dispatch(self, dataloader, pl_module, trainer):
         if self.mode == "multi":
             for channel, data in dataloader.iterables.items():
                 input_imgs = data[:self.num_images]
-                self.__shared_logging_step(input_imgs, pl_module, trainer, channel)
+                mu, logvar = self.__shared_logging_step(input_imgs, pl_module, trainer, channel)
+                self.__x_logging_step(mu, trainer, "mu", channel)
+                self.__x_logging_step(logvar, trainer, "logvar", channel)
+        elif self.mode == "all":
+            input_imgs = dataloader.dataset[:self.num_images]
+            mu, logvar = self.__shared_logging_step(input_imgs, pl_module, trainer)
+            for m, l, c in zip(mu, logvar, self.channels):
+                self.__x_logging_step(m, trainer, "mu", c)
+                self.__x_logging_step(l, trainer, "logvar", c)
         else:
             input_imgs = dataloader.dataset[:self.num_images]
-            self.__shared_logging_step(input_imgs, pl_module, trainer)
+            mu, logvar = self.__shared_logging_step(input_imgs, pl_module, trainer)
+            self.__x_logging_step(mu, trainer, "mu")
+            self.__x_logging_step(logvar, trainer, "logvar")
 
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
