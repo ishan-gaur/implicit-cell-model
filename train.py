@@ -47,11 +47,13 @@ if args.checkpoint is not None:
 config = {
     "imsize": 256,
     "nf": 128,
-    "batch_size": 16,
-    "devices": [4],
-    "num_workers": 1,
-    # "devices": list(range(4, torch.cuda.device_count())),
-    # "num_workers": 4,
+    "batch_size": 8,
+    # "devices": [4],
+    # "num_workers": 1,
+    "devices": list(range(4, torch.cuda.device_count())),
+    "num_workers": 4,
+    # "devices": list(range(0, torch.cuda.device_count())),
+    # "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
     "lr": 5e-5,
     "eps": 1e-12,
@@ -62,7 +64,7 @@ config = {
     "epochs": args.epochs,
     "model": args.model,
     "latent_dim": 512,
-    "lambda": 0
+    "lambda": 1.0,
 }
 
 fucci_path = Path(args.data)
@@ -85,7 +87,7 @@ wandb_logger = WandbLogger(
     config=config
 )
 
-checkpoint_callback = ModelCheckpoint(
+val_checkpoint_callback = ModelCheckpoint(
     save_top_k=1,
     monitor="validate/loss",
     mode="min",
@@ -93,6 +95,8 @@ checkpoint_callback = ModelCheckpoint(
     filename="{epoch:02d}-{validate/loss:.2f}",
     auto_insert_metric_name=False,
 )
+
+latest_checkpoint_callback = ModelCheckpoint(dirpath=lightning_dir, save_last=True)
 
 if config["patience"] > config["stopping_patience"]:
     raise ValueError("Patience must be less than stopping patience. LR will never get adjusted.")
@@ -156,19 +160,24 @@ if args.model == "multi":
         map_widths=(1,),
     )
 elif args.model == "all":
-    print("Using MultiModalAutoencoder")
-    model = MultiModalAutoencoder(
-        nc=1,
-        nf=config["nf"],
-        ch_mult=(1, 2, 4, 8, 8, 8),
-        imsize=config["imsize"],
-        latent_dim=config["latent_dim"],
-        lr=config["lr"],
-        lr_eps=config["eps"],
-        patience=config["patience"],
-        channels=dm.get_channels(),
-        map_widths=(1,),
-    )
+    if args.checkpoint is None:
+        print("Using MultiModalAutoencoder")
+        model = MultiModalAutoencoder(
+            nc=1,
+            nf=config["nf"],
+            ch_mult=(1, 2, 4, 8, 8, 8),
+            imsize=config["imsize"],
+            latent_dim=config["latent_dim"],
+            lr=config["lr"],
+            lr_eps=config["eps"],
+            patience=config["patience"],
+            channels=dm.get_channels(),
+            map_widths=(1,),
+            lambda_kl=config["lambda"],
+        )
+    else:
+        print("Loading MultiModalAutoEncoder from checkpoint")
+        model = MultiModalAutoencoder.load_from_checkpoint(args.checkpoint)
 else:
     if args.model == "reference":
         nc = 2
@@ -219,7 +228,8 @@ trainer = pl.Trainer(
     gradient_clip_val=5e5,
     # gradient_clip_algorithm="norm",
     callbacks=[
-        checkpoint_callback,
+        val_checkpoint_callback,
+        latest_checkpoint_callback,
         # stopping_callback,
         LearningRateMonitor(logging_interval='step'),
         ReconstructionVisualization(channels=None if args.model == "total" else dm.get_channels(),

@@ -22,7 +22,7 @@ import wandb
 
 from FUCCIDataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
 from FUCCIDataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, FUCCIChannelDatasetInMemory, TotalDatasetInMemory
-from models import Encoder, MuEncoder, Decoder, MapperIn, MapperOut
+from models import Encoder, ImageEncoder, Decoder, ImageDecoder, MapperIn, MapperOut
 
 class FUCCIDataModule(pl.LightningDataModule):
     def __init__(self, data_dir, dataset, batch_size, num_workers, 
@@ -106,6 +106,7 @@ class MultiModalAutoencoder(pl.LightningModule):
         latent_dim: int = 512,
         lr: float = 1e-6,
         lr_eps: float = 1e-10, # minimum change in learning rate allowed (no update after this)
+        factor: float = 0.5, # factor to reduce lr by
         patience: int = 4, # number of epochs to wait before reducing lr
         channels: List[str] = [], # names of the channels for each mapping
         map_widths: Tuple[int, ...] = (2, 2), # width multiplier for each layer
@@ -114,12 +115,13 @@ class MultiModalAutoencoder(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        self.encoder = torch.compile(MuEncoder(nc, nf, ch_mult, imsize, latent_dim))
-        self.decoder = torch.compile(Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim))
+        self.encoder = torch.compile(ImageEncoder(nc, nf, ch_mult, imsize, latent_dim))
+        self.decoder = torch.compile(ImageDecoder(nc, nf, ch_mult[::-1], imsize, latent_dim))
         self.ae_latent = latent_dim
 
         self.lr = lr
         self.lr_eps = lr_eps
+        self.factor = factor
         self.patience = patience
 
         self.map_widths = map_widths
@@ -193,7 +195,7 @@ class MultiModalAutoencoder(pl.LightningModule):
         x_hat = torch.stack([self.decode(embeddings[i], j) for i, j in enumerate(output_channels)])
         x_target = torch.stack([batch[channel] for channel in output_channels])
         loss = F.mse_loss(x_hat, x_target) # TODO: log by input-output channel pairs too and aggregate over epoch
-        self.log(f'{stage}/loss', loss)
+        self.log(f'{stage}/loss', loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -210,6 +212,22 @@ class MultiModalAutoencoder(pl.LightningModule):
     
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
+        return optimizer
+    #     scheduler = ReduceLROnPlateau(
+    #         optimizer,
+    #         patience=self.patience,
+    #         eps=self.lr_eps,
+    #         factor=self.factor,
+    #     )
+    #     return {
+    #         "optimizer": optimizer,
+    #         "lr_scheduler": scheduler,
+    #         "monitor": "train/loss"
+    #     }
+
+    # def lr_scheduler_step(self, scheduler, metric):
+    #     scheduler.step(metric)
+        # self.log("lr", scheduler._last_lr[0], on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
 
 class CrossModalAutoencoder(pl.LightningModule):
