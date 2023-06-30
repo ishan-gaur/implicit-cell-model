@@ -110,6 +110,7 @@ class MultiModalAutoencoder(pl.LightningModule):
         patience: int = 4, # number of epochs to wait before reducing lr
         channels: List[str] = [], # names of the channels for each mapping
         map_widths: Tuple[int, ...] = (2, 2), # width multiplier for each layer
+        lambda_kl: float = 1.0, # weight for kl divergence loss
     ):
 
         super().__init__()
@@ -123,6 +124,7 @@ class MultiModalAutoencoder(pl.LightningModule):
         self.lr_eps = lr_eps
         self.factor = factor
         self.patience = patience
+        self.lambda_kl = lambda_kl
 
         self.map_widths = map_widths
         self.maps_in = nn.ModuleList()
@@ -180,6 +182,11 @@ class MultiModalAutoencoder(pl.LightningModule):
             mu.append(m)
             logvar.append(l)
         return mu, logvar
+
+    def kl_loss(self, mu, logvar):
+        var = torch.exp(logvar)
+        covar = torch.diag_embed(var)
+        return torch.sum(logvar) + torch.sum(torch.linalg.inv(covar)) + torch.sum(mu.pow(2))
     
     def __shared_step(self, batch, stage):
         # put all through encoding and calculate regularization term against prior
@@ -188,13 +195,22 @@ class MultiModalAutoencoder(pl.LightningModule):
         # batch is N x 4 x 256 x 256
         batch = batch.transpose(0, 1) # 4 x N x 256 x 256
         batch = batch[:, :, None, ...] # 4 x N x 1 x 256 x 256
+        loss_kl = 0
         for channel, channel_batch in enumerate(batch):
             mu, logvar = self.encode(channel_batch, channel)
+            kl = self.kl_loss(mu, logvar)
+            self.log(f'{stage}/kl_loss_{channel}', kl, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+            loss_kl += kl
             embeddings[channel] = self.reparameterized_sampling(mu, logvar)
+
         output_channels = random.sample(range(len(self.channels)), len(self.channels))
         x_hat = torch.stack([self.decode(embeddings[i], j) for i, j in enumerate(output_channels)])
+
         x_target = torch.stack([batch[channel] for channel in output_channels])
-        loss = F.mse_loss(x_hat, x_target) # TODO: log by input-output channel pairs too and aggregate over epoch
+        mse_loss = F.mse_loss(x_hat, x_target) # TODO: log by input-output channel pairs too and aggregate over epoch
+        loss = mse_loss + self.lambda_kl * loss_kl
+
+        self.log(f'{stage}/mse_loss', mse_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(f'{stage}/loss', loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
