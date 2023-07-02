@@ -199,7 +199,7 @@ class MultiModalAutoencoder(pl.LightningModule):
         for channel, channel_batch in enumerate(batch):
             mu, logvar = self.encode(channel_batch, channel)
             kl = self.kl_loss(mu, logvar)
-            self.log(f'{stage}/kl_loss_{channel}', kl, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+            self.log(f'{stage}/kl_loss_{self.channels[channel]}', kl, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
             loss_kl += kl
             embeddings[channel] = self.reparameterized_sampling(mu, logvar)
 

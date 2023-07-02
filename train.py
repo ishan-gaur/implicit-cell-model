@@ -63,7 +63,7 @@ config = {
     "stopping_patience": 20,
     "epochs": args.epochs,
     "model": args.model,
-    "latent_dim": 512,
+    "latent_dim": 2048,
     "lambda": 1.0,
 }
 
