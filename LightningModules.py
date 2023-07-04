@@ -196,6 +196,20 @@ class MultiModalAutoencoder(pl.LightningModule):
         log_sigma = min + F.softplus(log_sigma - min)
         gaussian_nll = 0.5 * torch.pow((x_hat - x) / log_sigma.exp(), 2) + log_sigma
         return gaussian_nll.sum()
+
+    def reg_mse_loss(self, embeddings, batch):
+        x_hat = torch.stack([self.decode(embeddings[i], i) for i in range(len(self.channels))])
+        x_target = torch.stack([batch[channel] for channel in range(len(self.channels))])
+        mse_loss = F.mse_loss(x_hat, x_target) # TODO: log by input-output channel pairs too and aggregate over epoch
+        return mse_loss, x_hat, x_target
+
+    def perm_mse_loss(self, embeddings, batch):
+        output_channels = random.sample(range(len(self.channels)), len(self.channels))
+        perm_x_hat = torch.stack([self.decode(embeddings[i], j) for i, j in enumerate(output_channels)])
+        perm_x_target = torch.stack([batch[channel] for channel in output_channels])
+        perm_loss = F.mse_loss(perm_x_hat, perm_x_target)
+        return perm_loss, perm_x_hat, perm_x_target
+        
     
     def __shared_step(self, batch, stage):
         # put all through encoding and calculate regularization term against prior
@@ -212,19 +226,16 @@ class MultiModalAutoencoder(pl.LightningModule):
             loss_kl += kl
             embeddings[channel] = self.reparameterized_sampling(mu, logvar)
 
-        # output_channels = random.sample(range(len(self.channels)), len(self.channels))
-        # x_hat = torch.stack([self.decode(embeddings[i], j) for i, j in enumerate(output_channels)])
-        # x_target = torch.stack([batch[channel] for channel in output_channels])
-        x_hat = torch.stack([self.decode(embeddings[i], i) for i in range(len(self.channels))])
-        x_target = torch.stack([batch[channel] for channel in range(len(self.channels))])
-
-        # mse_loss = F.mse_loss(x_hat, x_target) # TODO: log by input-output channel pairs too and aggregate over epoch
+        mse_loss, x_hat, x_target = self.reg_mse_loss(embeddings, batch)
+        perm_loss, perm_x_hat, perm_x_target = self.perm_mse_loss(embeddings, batch)
+        # recon_loss = self.sigma_reconstruction_loss(x_target, x_hat)
         # loss = mse_loss + self.lambda_kl * loss_kl
-        recon_loss = self.sigma_reconstruction_loss(x_target, x_hat)
-        loss = recon_loss + loss_kl
+        loss = mse_loss + perm_loss + self.lambda_kl * loss_kl
+        # loss = recon_loss + loss_kl
 
-        # self.log(f'{stage}/mse_loss', mse_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log(f'{stage}/recon_loss', recon_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(f'{stage}/mse_loss', mse_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(f'{stage}/perm_loss', perm_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        # self.log(f'{stage}/recon_loss', recon_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(f'{stage}/loss', loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
@@ -514,6 +525,38 @@ class ReconstructionVisualization(Callback):
         rgb_grid, _, _, _ = multichannel_to_rgb(grid, cmaps=cmap)
         return rgb_grid, grid
 
+    def __perm_reconstruction_step(self, batch, pl_module, cmap):
+        batch = batch.to(pl_module.device)
+        print("================================")
+        print(batch.shape)
+        print("================================")
+        with torch.no_grad():
+            pl_module.eval()
+            embeddings = {channel: None for channel in range(len(batch))}
+            for channel, channel_batch in enumerate(batch):
+                mu, logvar = pl_module.encode(channel_batch, channel)
+                embeddings[channel] = pl_module.reparameterized_sampling(mu, logvar)
+            embeddings = [embeddings[channel] for channel in embeddings]
+            embeddings = torch.stack(embeddings)
+            print("================================")
+            print(embeddings.shape)
+            print("================================")
+            loss, x_hat, x = pl_module.perm_mse_loss(embeddings, batch)
+            print("================================")
+            print(x.shape)
+            print(x_hat.shape)
+            print("================================")
+            pl_module.train()
+        x = x.transpose(0, 1)
+        x_hat = x_hat.transpose(0, 1)
+        x = x.squeeze(2)
+        x_hat = x_hat.squeeze(2)
+        grid = ReconstructionVisualization.make_reconstruction_grid(x, x_hat)
+        grid = tensor_to_image(grid)
+        grid = np.moveaxis(grid, -1, 0)
+        rgb_grid, _, _, _ = multichannel_to_rgb(grid, cmaps=cmap)
+        return rgb_grid, grid
+
     @staticmethod
     def image_list_normalization(image_list):
         for i in range(len(image_list)):
@@ -530,9 +573,18 @@ class ReconstructionVisualization(Callback):
 
     def __shared_logging_step(self, input_imgs, pl_module, cmap, trainer, channel=""):
         rgb_grid, grid = self.__shared_reconstruction_step(input_imgs, pl_module, cmap)
-        if self.mode == "single":
+        if self.mode != "multi":
             trainer.logger.experiment.log({
                 f"{trainer.state.stage}/reconstruction_samples": wandb.Image(rgb_grid,
+                    caption="Original and reconstructed images")
+            })
+
+        if self.mode == "perm":
+            input_imgs = input_imgs.transpose(0, 1) # 4 x N x 256 x 256
+            input_imgs = input_imgs[:, :, None, ...] # 4 x N x 1 x 256 x 256
+            rgb_grid, grid = self.__perm_reconstruction_step(input_imgs, pl_module, cmap)
+            trainer.logger.experiment.log({
+                f"{trainer.state.stage}/perm_reconstruction_samples": wandb.Image(rgb_grid,
                     caption="Original and reconstructed images")
             })
 

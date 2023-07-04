@@ -48,11 +48,12 @@ config = {
     "imsize": 256,
     "nf": 128,
     "batch_size": 8,
-    # "devices": [4],
-    # "num_workers": 1,
-    "devices": list(range(4, torch.cuda.device_count())),
-    "num_workers": 4,
+    "devices": [4],
+    "num_workers": 1,
+    # "devices": list(range(0, 4)),
+    # "devices": list(range(4, torch.cuda.device_count())),
     # "devices": list(range(0, torch.cuda.device_count())),
+    # "num_workers": 4,
     # "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
     "lr": 5e-5,
@@ -63,7 +64,7 @@ config = {
     "stopping_patience": 20,
     "epochs": args.epochs,
     "model": args.model,
-    "latent_dim": 2048,
+    "latent_dim": 512,
     "lambda": 1.0,
 }
 
@@ -212,6 +213,12 @@ wandb_logger.watch(model, log="all", log_freq=10)
 
 print_with_time("Setting up trainer...")
 
+reconstuction_mode = "single"
+if args.model == "multi":
+    reconstuction_mode = "multi"
+elif args.model == "all":
+    reconstuction_mode = "perm"
+
 trainer = pl.Trainer(
     default_root_dir=lightning_dir,
     accelerator="gpu" if not args.cpu else "cpu",
@@ -233,7 +240,7 @@ trainer = pl.Trainer(
         # stopping_callback,
         LearningRateMonitor(logging_interval='step'),
         ReconstructionVisualization(channels=None if args.model == "total" else dm.get_channels(),
-                                    mode="multi" if args.model == "multi" else "single"),
+                                    mode=reconstuction_mode),
         EmbeddingLogger(every_n_epochs=1, mode=args.model, channels=dm.get_channels() if args.model == "all" else None),
     ]
 )
