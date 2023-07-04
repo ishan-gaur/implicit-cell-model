@@ -115,6 +115,7 @@ class MultiModalAutoencoder(pl.LightningModule):
 
         super().__init__()
         self.save_hyperparameters()
+        self.eps = 1e-6 # just above e^-20
 
         self.encoder = torch.compile(ImageEncoder(nc, nf, ch_mult, imsize, latent_dim))
         self.decoder = torch.compile(ImageDecoder(nc, nf, ch_mult[::-1], imsize, latent_dim))
@@ -187,6 +188,14 @@ class MultiModalAutoencoder(pl.LightningModule):
         var = torch.exp(logvar)
         covar = torch.diag_embed(var)
         return torch.sum(logvar) + torch.sum(torch.linalg.inv(covar)) + torch.sum(mu.pow(2))
+        # return torch.sum(logvar) + torch.sum(torch.exp(-logvar + self.eps)) + torch.sum(mu.pow(2))
+
+    def sigma_reconstruction_loss(self, x, x_hat):
+        log_sigma = ((x_hat - x) ** 2).mean(list(range(len(x.shape))), keepdim=True).sqrt().log()
+        min = np.log(self.eps)
+        log_sigma = min + F.softplus(log_sigma - min)
+        gaussian_nll = 0.5 * torch.pow((x_hat - x) / log_sigma.exp(), 2) + log_sigma
+        return gaussian_nll.sum()
     
     def __shared_step(self, batch, stage):
         # put all through encoding and calculate regularization term against prior
@@ -203,14 +212,19 @@ class MultiModalAutoencoder(pl.LightningModule):
             loss_kl += kl
             embeddings[channel] = self.reparameterized_sampling(mu, logvar)
 
-        output_channels = random.sample(range(len(self.channels)), len(self.channels))
-        x_hat = torch.stack([self.decode(embeddings[i], j) for i, j in enumerate(output_channels)])
+        # output_channels = random.sample(range(len(self.channels)), len(self.channels))
+        # x_hat = torch.stack([self.decode(embeddings[i], j) for i, j in enumerate(output_channels)])
+        # x_target = torch.stack([batch[channel] for channel in output_channels])
+        x_hat = torch.stack([self.decode(embeddings[i], i) for i in range(len(self.channels))])
+        x_target = torch.stack([batch[channel] for channel in range(len(self.channels))])
 
-        x_target = torch.stack([batch[channel] for channel in output_channels])
-        mse_loss = F.mse_loss(x_hat, x_target) # TODO: log by input-output channel pairs too and aggregate over epoch
-        loss = mse_loss + self.lambda_kl * loss_kl
+        # mse_loss = F.mse_loss(x_hat, x_target) # TODO: log by input-output channel pairs too and aggregate over epoch
+        # loss = mse_loss + self.lambda_kl * loss_kl
+        recon_loss = self.sigma_reconstruction_loss(x_target, x_hat)
+        loss = recon_loss + loss_kl
 
-        self.log(f'{stage}/mse_loss', mse_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        # self.log(f'{stage}/mse_loss', mse_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(f'{stage}/recon_loss', recon_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(f'{stage}/loss', loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
