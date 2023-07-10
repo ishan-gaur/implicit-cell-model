@@ -209,7 +209,13 @@ class MultiModalAutoencoder(pl.LightningModule):
         perm_x_target = torch.stack([batch[channel] for channel in output_channels])
         perm_loss = F.mse_loss(perm_x_hat, perm_x_target)
         return perm_loss, perm_x_hat, perm_x_target
-        
+
+    def impute_mse_loss(self, embeddings, batch):
+        # select a random channel per image in batch
+        output_channels = random.choices(range(len(self.channels)), batch.shape[1])
+        # create a tensor that is the same shape as embeddings but with the selected channel zeroed out
+        # use this to get the average embedding
+        # decode this average embedding and compare to the original image
     
     def __shared_step(self, batch, stage):
         # put all through encoding and calculate regularization term against prior
@@ -228,14 +234,18 @@ class MultiModalAutoencoder(pl.LightningModule):
 
         mse_loss, x_hat, x_target = self.reg_mse_loss(embeddings, batch)
         perm_loss, perm_x_hat, perm_x_target = self.perm_mse_loss(embeddings, batch)
-        # recon_loss = self.sigma_reconstruction_loss(x_target, x_hat)
+        reg_recon_loss = self.sigma_reconstruction_loss(x_target, x_hat)
+        perm_recon_loss = self.sigma_reconstruction_loss(perm_x_target, perm_x_hat)
+        self.impute_mse_loss(embeddings, batch)
         # loss = mse_loss + self.lambda_kl * loss_kl
-        loss = mse_loss + perm_loss + self.lambda_kl * loss_kl
+        # loss = mse_loss + perm_loss + self.lambda_kl * loss_kl
         # loss = recon_loss + loss_kl
+        # loss = recon_loss + loss_kl + perm_loss
+        loss = 0.5 * (reg_recon_loss + perm_recon_loss) + loss_kl
 
-        self.log(f'{stage}/mse_loss', mse_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log(f'{stage}/perm_loss', perm_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        # self.log(f'{stage}/recon_loss', recon_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        # self.log(f'{stage}/mse_loss', mse_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(f'{stage}/perm_loss', perm_recon_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(f'{stage}/recon_loss', reg_recon_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(f'{stage}/loss', loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
@@ -250,6 +260,21 @@ class MultiModalAutoencoder(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         loss = self.__shared_step(batch, "test")
         return loss
+
+    def get_predict_modes(self):
+        return ["embedding"]
+
+    def set_predict_mode(self, mode):
+        if mode not in self.get_predict_modes():
+            raise ValueError(f"mode must be one of {self.get_predict_modes()}, got {mode}")
+        self.predict_mode = mode
+
+    def predict_step(self, batch, batch_idx):
+        if self.predict_mode == "embedding":
+            with torch.inference_mode(mode=False):
+                return self.forward_embedding(batch)
+        else:
+            raise ValueError(f"mode must be one of {self.get_predict_modes()}, got {self.predict_mode}")
     
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
@@ -526,10 +551,8 @@ class ReconstructionVisualization(Callback):
         return rgb_grid, grid
 
     def __perm_reconstruction_step(self, batch, pl_module, cmap):
+        batch = torch.clone(batch)
         batch = batch.to(pl_module.device)
-        print("================================")
-        print(batch.shape)
-        print("================================")
         with torch.no_grad():
             pl_module.eval()
             embeddings = {channel: None for channel in range(len(batch))}
@@ -538,18 +561,77 @@ class ReconstructionVisualization(Callback):
                 embeddings[channel] = pl_module.reparameterized_sampling(mu, logvar)
             embeddings = [embeddings[channel] for channel in embeddings]
             embeddings = torch.stack(embeddings)
-            print("================================")
-            print(embeddings.shape)
-            print("================================")
             loss, x_hat, x = pl_module.perm_mse_loss(embeddings, batch)
-            print("================================")
-            print(x.shape)
-            print(x_hat.shape)
-            print("================================")
             pl_module.train()
         x = x.transpose(0, 1)
         x_hat = x_hat.transpose(0, 1)
         x = x.squeeze(2)
+        x_hat = x_hat.squeeze(2)
+        grid = ReconstructionVisualization.make_reconstruction_grid(x, x_hat)
+        grid = tensor_to_image(grid)
+        grid = np.moveaxis(grid, -1, 0)
+        rgb_grid, _, _, _ = multichannel_to_rgb(grid, cmaps=cmap)
+        return rgb_grid, grid
+
+    def __one_to_all_reconstruction_step(self, batch, pl_module, cmap):
+        batch = torch.clone(batch)
+        batch = batch.to(pl_module.device) # 4 x N x 1 x H x W
+        batch.transpose_(0, 1) # N x 4 x 1 x H x W
+        batch = batch[:batch.shape[1]] # one prediction per channel
+        batch.transpose_(0, 1) # 4 x N(4) x 1 x H x W
+        with torch.no_grad():
+            pl_module.eval()
+            embeddings = {channel: None for channel in range(len(batch))}
+            for channel, channel_batch in enumerate(batch):
+                mu, logvar = pl_module.encode(channel_batch, channel)
+                embeddings[channel] = pl_module.reparameterized_sampling(mu, logvar)
+            embeddings = [embeddings[channel] for channel in embeddings]
+            embeddings = torch.stack(embeddings) # 4 x N(4) x 512
+            embeddings.transpose_(0, 1) # N x 4 x 512
+            batch.transpose_(0, 1) # N x 4 x 1 x H x W
+            x_hat = torch.zeros_like(batch)
+            for channel, image_embed in enumerate(embeddings):
+                for output_channel in range(batch.shape[1]):
+                    x_hat[channel, output_channel] = pl_module.decode(image_embed[channel, None, ...], output_channel)
+            pl_module.train()
+        x = batch.squeeze(2)
+        x_hat = x_hat.squeeze(2)
+        grid = ReconstructionVisualization.make_reconstruction_grid(x, x_hat)
+        grid = tensor_to_image(grid)
+        grid = np.moveaxis(grid, -1, 0)
+        rgb_grid, _, _, _ = multichannel_to_rgb(grid, cmaps=cmap)
+        return rgb_grid, grid
+
+    def __many_to_one_reconstruction_step(self, batch, pl_module, cmap):
+        batch = torch.clone(batch)
+        batch = batch.to(pl_module.device) # 4 x N x 1 x H x W
+        batch.transpose_(0, 1) # N x 4 x 1 x H x W
+        batch = batch[:batch.shape[1]] # one prediction per channel
+        batch.transpose_(0, 1) # 4 x N(4) x 1 x H x W
+        with torch.no_grad():
+            pl_module.eval()
+            embeddings = {channel: None for channel in range(len(batch))}
+            for channel, channel_batch in enumerate(batch):
+                mu, logvar = pl_module.encode(channel_batch, channel)
+                embeddings[channel] = pl_module.reparameterized_sampling(mu, logvar)
+            embeddings = [embeddings[channel] for channel in embeddings]
+            embeddings = torch.stack(embeddings) # 4 x N(4) x 512
+            embeddings.transpose_(0, 1) # N x 4 x 512
+            batch.transpose_(0, 1) # N x 4 x 1 x H x W
+            x_hat = torch.zeros_like(batch)
+            for channel, image_embed in enumerate(embeddings):
+                for output_channel in range(batch.shape[1]):
+                    if channel != output_channel:
+                        x_hat[channel, output_channel] = batch[channel, output_channel]
+                    else:
+                        embed_pred = torch.zeros_like(image_embed[0])
+                        for c in range(batch.shape[1]):
+                            if c != channel:
+                                embed_pred += image_embed[c]
+                        embed_pred /= (batch.shape[1] - 1)
+                        x_hat[channel, output_channel] = pl_module.decode(embed_pred, output_channel)
+            pl_module.train()
+        x = batch.squeeze(2)
         x_hat = x_hat.squeeze(2)
         grid = ReconstructionVisualization.make_reconstruction_grid(x, x_hat)
         grid = tensor_to_image(grid)
@@ -579,15 +661,6 @@ class ReconstructionVisualization(Callback):
                     caption="Original and reconstructed images")
             })
 
-        if self.mode == "perm":
-            input_imgs = input_imgs.transpose(0, 1) # 4 x N x 256 x 256
-            input_imgs = input_imgs[:, :, None, ...] # 4 x N x 1 x 256 x 256
-            rgb_grid, grid = self.__perm_reconstruction_step(input_imgs, pl_module, cmap)
-            trainer.logger.experiment.log({
-                f"{trainer.state.stage}/perm_reconstruction_samples": wandb.Image(rgb_grid,
-                    caption="Original and reconstructed images")
-            })
-
         if self.channels is not None:
             if len(self.channels) != grid.shape[0]:
                 raise ValueError(f"Number of channels ({len(self.channels)}) does not match number of images ({grid.shape[0]})")
@@ -596,6 +669,26 @@ class ReconstructionVisualization(Callback):
                     f"{trainer.state.stage}/reconstruction_samples_{channel}": wandb.Image(grid[i],
                         caption=f"Original and reconstructed {channel} images")
                 })
+
+        if self.mode == "perm":
+            input_imgs = input_imgs.transpose(0, 1) # 4 x N x 256 x 256
+            input_imgs = input_imgs[:, :, None, ...] # 4 x N x 1 x 256 x 256
+            # rgb_grid, grid = self.__perm_reconstruction_step(input_imgs, pl_module, cmap)
+            rgb_grid, grid = self.__perm_reconstruction_step(input_imgs, pl_module, cmap)
+            trainer.logger.experiment.log({
+                f"{trainer.state.stage}/perm_reconstruction_samples": wandb.Image(rgb_grid,
+                    caption="Original and reconstructed images")
+            })
+            rgb_grid, grid = self.__one_to_all_reconstruction_step(input_imgs, pl_module, cmap)
+            trainer.logger.experiment.log({
+                f"{trainer.state.stage}/one_to_many_reconstruction_samples": wandb.Image(rgb_grid,
+                    caption="Original and reconstructed images")
+            })
+            rgb_grid, grid = self.__many_to_one_reconstruction_step(input_imgs, pl_module, cmap)
+            trainer.logger.experiment.log({
+                f"{trainer.state.stage}/many_to_one_reconstruction_samples": wandb.Image(rgb_grid,
+                    caption="Original and reconstructed images")
+            })
 
     def __shared_logging_dispatch(self, dataloader, pl_module, trainer):
         if self.mode == "multi":
