@@ -40,11 +40,11 @@ class MapperOut(nn.Module):
         out_dim = input_dim
         for i in range(len(width_mult) - 1, -1, -1):
             in_dim = int(input_dim * width_mult[i])
-            self.layers.append(torch.nn.Linear(in_dim, out_dim))
+            self.layers.insert(0, torch.nn.Linear(in_dim, out_dim))
             if i != 0:
-                self.layers.append(torch.nn.LeakyReLU(inplace=True))
+                self.layers.insert(0, torch.nn.LeakyReLU(inplace=True))
             else:
-                self.layers.append(torch.nn.Sigmoid())
+                self.layers.insert(0, torch.nn.Sigmoid())
             out_dim = in_dim
 
     def forward(self, z):
