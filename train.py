@@ -48,12 +48,14 @@ config = {
     "imsize": 256,
     "nf": 128,
     "batch_size": 8,
-    "devices": [4],
-    "num_workers": 1,
+    # "devices": [7],
+    # "num_workers": 1,
     # "devices": list(range(0, 4)),
     # "devices": list(range(4, torch.cuda.device_count())),
     # "devices": list(range(0, torch.cuda.device_count())),
-    # "num_workers": 4,
+    "devices": [3, 4, 5, 6, 7],
+    "num_workers": 4,
+    # "num_workers": 5,
     # "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
     "lr": 5e-5,
@@ -66,6 +68,7 @@ config = {
     "model": args.model,
     "latent_dim": 512,
     "lambda": 1.0,
+    "mapper_mults": (2, 2)
 }
 
 fucci_path = Path(args.data)
@@ -157,8 +160,6 @@ if args.model == "multi":
         lr_eps=config["eps"],
         patience=config["patience"],
         channels=dm.get_channels(),
-        # map_widths=(2, 2),
-        map_widths=(1,),
     )
 elif args.model == "all":
     if args.checkpoint is None:
@@ -173,7 +174,7 @@ elif args.model == "all":
             lr_eps=config["eps"],
             patience=config["patience"],
             channels=dm.get_channels(),
-            map_widths=(1,),
+            map_widths=config["mapper_mults"],
             lambda_kl=config["lambda"],
         )
     else:
@@ -223,6 +224,7 @@ trainer = pl.Trainer(
     default_root_dir=lightning_dir,
     accelerator="gpu" if not args.cpu else "cpu",
     devices=config["devices"] if not args.cpu else "auto",
+    strategy='ddp_find_unused_parameters_true',
     limit_train_batches=0.1 if args.dev else None,
     limit_val_batches=0.1 if args.dev else None,
     # fast_dev_run=10,

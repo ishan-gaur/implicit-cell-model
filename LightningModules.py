@@ -117,8 +117,12 @@ class MultiModalAutoencoder(pl.LightningModule):
         self.save_hyperparameters()
         self.eps = 1e-6 # just above e^-20
 
-        self.encoder = torch.compile(ImageEncoder(nc, nf, ch_mult, imsize, latent_dim))
-        self.decoder = torch.compile(ImageDecoder(nc, nf, ch_mult[::-1], imsize, latent_dim))
+        chkpt = Path("/data/ishang/fucci_vae/FUCCI_total_VAE_2023_06_28_07_08/lightning_logs/277-963202.12.ckpt")
+        ae = AutoEncoder.load_from_checkpoint(chkpt)
+        self.encoder = ae.encoder
+        self.decoder = ae.decoder
+        # self.encoder = torch.compile(ImageEncoder(nc, nf, ch_mult, imsize, latent_dim))
+        # self.decoder = torch.compile(ImageDecoder(nc, nf, ch_mult[::-1], imsize, latent_dim))
         self.ae_latent = latent_dim
 
         self.lr = lr
@@ -150,7 +154,8 @@ class MultiModalAutoencoder(pl.LightningModule):
     def encode(self, x, channel_idx):
         if channel_idx >= len(self.channels):
             raise ValueError(f"channel_idx {channel_idx} is out of range. Please add_mapping or check request.")
-        image_z = self.encoder(x)
+        image_mu, image_logvar = self.encoder(x)
+        image_z = self.reparameterized_sampling(image_mu, image_logvar)
         mu, logvar = self.maps_in[channel_idx](image_z)
         return mu, logvar
     
@@ -236,7 +241,7 @@ class MultiModalAutoencoder(pl.LightningModule):
         perm_loss, perm_x_hat, perm_x_target = self.perm_mse_loss(embeddings, batch)
         reg_recon_loss = self.sigma_reconstruction_loss(x_target, x_hat)
         perm_recon_loss = self.sigma_reconstruction_loss(perm_x_target, perm_x_hat)
-        self.impute_mse_loss(embeddings, batch)
+        # self.impute_mse_loss(embeddings, batch)
         # loss = mse_loss + self.lambda_kl * loss_kl
         # loss = mse_loss + perm_loss + self.lambda_kl * loss_kl
         # loss = recon_loss + loss_kl
@@ -277,7 +282,15 @@ class MultiModalAutoencoder(pl.LightningModule):
             raise ValueError(f"mode must be one of {self.get_predict_modes()}, got {self.predict_mode}")
     
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=self.lr)
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+        for param in self.decoder.parameters():
+            param.requires_grad = False
+        parameters = []
+        for i in range(len(self.channels)):
+            parameters.extend(self.maps_in[i].parameters())
+            parameters.extend(self.maps_out[i].parameters())
+        optimizer = optim.Adam(parameters, lr=self.lr)
         return optimizer
     #     scheduler = ReduceLROnPlateau(
     #         optimizer,
@@ -555,7 +568,7 @@ class ReconstructionVisualization(Callback):
         batch = batch.to(pl_module.device)
         with torch.no_grad():
             pl_module.eval()
-            embeddings = {channel: None for channel in range(len(batch))}
+            embeddings = {channel: None for channel in range(len(batch))} # because you can't directly access the channel list here
             for channel, channel_batch in enumerate(batch):
                 mu, logvar = pl_module.encode(channel_batch, channel)
                 embeddings[channel] = pl_module.reparameterized_sampling(mu, logvar)
@@ -610,6 +623,8 @@ class ReconstructionVisualization(Callback):
         batch.transpose_(0, 1) # 4 x N(4) x 1 x H x W
         with torch.no_grad():
             pl_module.eval()
+
+            # get embeddings per channel in the batch (each one has all images)
             embeddings = {channel: None for channel in range(len(batch))}
             for channel, channel_batch in enumerate(batch):
                 mu, logvar = pl_module.encode(channel_batch, channel)
@@ -618,6 +633,8 @@ class ReconstructionVisualization(Callback):
             embeddings = torch.stack(embeddings) # 4 x N(4) x 512
             embeddings.transpose_(0, 1) # N x 4 x 512
             batch.transpose_(0, 1) # N x 4 x 1 x H x W
+
+            # inference by using all embeddings other than the channel of interest to predict the channel
             x_hat = torch.zeros_like(batch)
             for channel, image_embed in enumerate(embeddings):
                 for output_channel in range(batch.shape[1]):
