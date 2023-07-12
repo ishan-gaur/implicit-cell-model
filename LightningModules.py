@@ -95,9 +95,6 @@ class FUCCIDataModule(pl.LightningDataModule):
         return self.dataset.channel_colors()
 
 
-
-
-
 class MultiModalAutoencoder(pl.LightningModule):
     def __init__(self,
         nc: int = 1, # number of channels
@@ -115,6 +112,7 @@ class MultiModalAutoencoder(pl.LightningModule):
         lambda_div: float = 0.5, # weight for the discriminator
         alt_training: bool = False, # whether to alternate training of the discriminator and the autoencoder
         alt_batch_ct: int = 4 * 4465, # number of batches to alternate over
+        train_generator: bool = True,
     ):
 
         super().__init__()
@@ -135,6 +133,7 @@ class MultiModalAutoencoder(pl.LightningModule):
         self.alt_batch_ct = alt_batch_ct
         self.wait_periods = 0
         self.wait_threshold = 20
+        self.train_generator = train_generator
 
         self.map_widths = map_widths
         self.maps_in = nn.ModuleList()
@@ -337,12 +336,22 @@ class MultiModalAutoencoder(pl.LightningModule):
             raise ValueError(f"mode must be one of {self.get_predict_modes()}, got {self.predict_mode}")
     
     def configure_optimizers(self):
-        generator_parameters = list(self.encoder.parameters()) + list(self.decoder.parameters())
+        for param in self.encoder.parameters():
+            param.requires_grad = self.train_generator
+        for param in self.decoder.parameters():
+            param.requires_grad = self.train_generator
+        parameters = []
+        for i in range(len(self.channels)):
+            parameters.extend(self.maps_in[i].parameters())
+            parameters.extend(self.maps_out[i].parameters())
+        generator_parameters = []
+        if self.train_generator:
+            generator_parameters += list(self.encoder.parameters()) + list(self.decoder.parameters())
         for c in range(len(self.channels)):
             generator_parameters += list(self.maps_in[c].parameters())
             generator_parameters += list(self.maps_out[c].parameters())
-        opt_g = optim.Adam(generator_parameters, lr=self.lr)
-        opt_d = optim.Adam(self.discriminator.parameters(), lr=self.lr)
+        opt_g = optim.Adam(generator_parameters, lr=lr)
+        opt_d = optim.Adam(self.discriminator.parameters, lr=self.lr)
         return [opt_g, opt_d], []
     #     scheduler = ReduceLROnPlateau(
     #         optimizer,
@@ -620,7 +629,7 @@ class ReconstructionVisualization(Callback):
         batch = batch.to(pl_module.device)
         with torch.no_grad():
             pl_module.eval()
-            embeddings = {channel: None for channel in range(len(batch))}
+            embeddings = {channel: None for channel in range(len(batch))} # because you can't directly access the channel list here
             for channel, channel_batch in enumerate(batch):
                 mu, logvar = pl_module.encode(channel_batch, channel)
                 embeddings[channel] = pl_module.reparameterized_sampling(mu, logvar)
@@ -675,6 +684,8 @@ class ReconstructionVisualization(Callback):
         batch.transpose_(0, 1) # 4 x N(4) x 1 x H x W
         with torch.no_grad():
             pl_module.eval()
+
+            # get embeddings per channel in the batch (each one has all images)
             embeddings = {channel: None for channel in range(len(batch))}
             for channel, channel_batch in enumerate(batch):
                 mu, logvar = pl_module.encode(channel_batch, channel)
@@ -683,6 +694,8 @@ class ReconstructionVisualization(Callback):
             embeddings = torch.stack(embeddings) # 4 x N(4) x 512
             embeddings.transpose_(0, 1) # N x 4 x 512
             batch.transpose_(0, 1) # N x 4 x 1 x H x W
+
+            # inference by using all embeddings other than the channel of interest to predict the channel
             x_hat = torch.zeros_like(batch)
             for channel, image_embed in enumerate(embeddings):
                 for output_channel in range(batch.shape[1]):
