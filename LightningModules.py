@@ -95,6 +95,169 @@ class FUCCIDataModule(pl.LightningDataModule):
         return self.dataset.channel_colors()
 
 
+class FUCCIModel(pl.LightningModule):
+    def __init__(self,
+        ae_checkpoint: Path,
+        # nc: int = 1, # number of channels
+        # nf: int = 128, # number of filters
+        # ch_mult: Tuple[int, ...] = (1, 2, 4, 8, 8, 8), # multiple of filters for each layer, each layer downsamples by 2
+        # imsize: int = 256,
+        latent_dim: int = 512, # TODO this should be accessible from the autoencoder
+        lr: float = 1e-6,
+        map_widths: Tuple[int, ...] = (2, 2), # width multiplier for each layer
+    ):
+
+        super().__init__()
+        self.save_hyperparameters()
+        self.eps = 1e-6 # just above e^-20
+
+        ae = AutoEncoder.load_from_checkpoint(ae_checkpoint)
+        self.encoder = ae.encoder
+        self.decoder = ae.decoder
+        self.ae_latent = latent_dim
+
+        self.lr = lr
+
+        self.map_widths = map_widths
+        self.maps_in = nn.ModuleList()
+        self.maps_out = nn.ModuleList()
+        self.channels_in = ["DAPI", "gamma-tubulin"]
+        self.channels_out = ["Geminin", "CDT1"]
+        for channel in self.channels_in:
+            self.maps_in.append(torch.compile(MapperIn(self.ae_latent, self.map_widths)))
+        for channel in self.channels_out:
+            self.maps_out.append(torch.compile(MapperOut(self.ae_latent, self.map_widths)))
+
+        self.latent_dim = latent_dim * self.map_widths[-1]
+
+    def reparameterized_sampling(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps.mul(std).add_(mu)
+
+    def encode(self, x): # x is B x C(2) x H x W
+        # predicted variance for the autoencoder checkpoint is 0
+        image_mu, _ = self.encoder(x.view(-1, x.shape[-2], x.shape[-1]))
+        image_z = image_mu # B x latent_dim, channels are interleaved
+        mus, logvars = [], []
+        for c, map_in in enumerate(self.maps_in):
+            mu, logvar = map_in(image_z.view(x.shape[0], len(self.channels_in), -1)[:, c])
+            mus.append(mu)
+            logvars.append(logvar)
+        return mus, logvars # each is B x latent_dim, channels are separated
+
+    def sample_average(self, mus, logvars): # mus and logvars are lists of B x latent_dim for each channel
+        mus = torch.stack(mus, dim=1) # B x c x latent_dim
+        mu = mus.mean(dim=1) # B x latent_dim
+        vars = torch.stack(logvars, dim=1).exp()
+        var = (vars + mu.pow(2)).mean(dim=1) - mu.pow(2).mean(dim=1)
+        logvar = var.log()
+        return mu, logvar
+    
+    def decode(self, z):
+        image_zs = []
+        for map_out in self.maps_out:
+            image_zs.append(map_out(z)[:, None, ...])
+        image_zs = torch.cat(image_zs, dim=1)
+        image = self.decoder(image_zs.view(-1, image_zs.shape[-2], image_zs.shape[-1]))
+        image = image.reshape(image_zs.shape[0], len(self.channels_out), image_zs.shape[-2], image_zs.shape[-1])
+        return image
+
+    def forward(self, x):
+        # x is N x 4 x 256 x 256 (N four-channel images)
+        x = x[:, :2]
+        mus, logvars = self.encode(x)
+        mu_z, logvar_z = self.sample_average(mus, logvars)
+        z = self.reparameterized_sampling(mu_z, logvar_z)
+        x_hat = self.decode(z)
+        return x_hat
+
+    def forward_embedding(self, x):
+        # x is N x 4 x 256 x 256 (N four-channel images)
+        x = x[:, :2]
+        mus, logvars = self.encode(x)
+        mu_z, logvar_z = self.sample_average(mus, logvars)
+        return mu_z, logvar_z
+
+    def kl_loss(self, mu, logvar):
+        var = torch.exp(logvar)
+        covar = torch.diag_embed(var)
+        return torch.sum(logvar) + torch.sum(torch.linalg.inv(covar)) + torch.sum(mu.pow(2))
+        # return torch.sum(logvar) + torch.sum(torch.exp(-logvar + self.eps)) + torch.sum(mu.pow(2))
+
+    def sigma_reconstruction_loss(self, x, x_hat):
+        x = x[:, 2:] # comparing only to the target channels
+        log_sigma = ((x_hat - x) ** 2).mean(list(range(len(x.shape))), keepdim=True).sqrt().log()
+        min = np.log(self.eps) # just above e^-20 so min is -20
+        log_sigma = min + F.softplus(log_sigma - min)
+        gaussian_nll = 0.5 * torch.pow((x_hat - x) / log_sigma.exp(), 2) + log_sigma
+        return gaussian_nll.sum()
+
+    def reg_mse_loss(self, x, x_hat):
+        x = x[:, 2:] # comparing only to the target channels
+        return F.mse_loss(x, x_hat)
+
+    def __shared_step(self, batch, stage):
+        # batch is N x 4 x 256 x 256
+        x = batch[:, :2]
+        x_target = batch[:, 2:]
+
+        mus, logvars = self.encode(x)
+        mu, logvar = self.sample_average(mus, logvars)
+        z = self.reparameterized_sampling(mu, logvar)
+        x_hat = self.decode(z)
+
+        loss_kl = self.kl_loss(mu, logvar)
+        recon_loss = self.sigma_reconstruction_loss(x_target, x_hat)
+        loss = recon_loss + loss_kl # optimal sigma VAE
+
+        self.log(f'{stage}/kl_loss', loss_kl, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(f'{stage}/recon_loss', recon_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(f'{stage}/loss', loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        return loss
+    
+    def configure_optimizers(self):
+        # only want to train the maps
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+        for param in self.decoder.parameters():
+            param.requires_grad = False
+        parameters = []
+        for i in range(len(self.channels)):
+            parameters.extend(self.maps_in[i].parameters())
+            parameters.extend(self.maps_out[i].parameters())
+        optimizer = optim.Adam(parameters, lr=self.lr)
+        return optimizer
+
+    def training_step(self, batch, batch_idx):
+        loss = self.__shared_step(batch, "train")
+        return loss
+    
+    def validation_step(self, batch, batch_idx):
+        loss = self.__shared_step(batch, "validate")
+        return loss
+    
+    def test_step(self, batch, batch_idx):
+        loss = self.__shared_step(batch, "test")
+        return loss
+
+    def get_predict_modes(self):
+        return ["embedding"]
+
+    def set_predict_mode(self, mode):
+        if mode not in self.get_predict_modes():
+            raise ValueError(f"mode must be one of {self.get_predict_modes()}, got {mode}")
+        self.predict_mode = mode
+
+    def predict_step(self, batch, batch_idx):
+        if self.predict_mode == "embedding":
+            with torch.inference_mode(mode=False):
+                return self.forward_embedding(batch)
+        else:
+            raise ValueError(f"mode must be one of {self.get_predict_modes()}, got {self.predict_mode}")
+
+
 class MultiModalAutoencoder(pl.LightningModule):
     def __init__(self,
         nc: int = 1, # number of channels
