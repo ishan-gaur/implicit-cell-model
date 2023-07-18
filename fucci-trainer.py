@@ -37,9 +37,10 @@ config = {
     # "devices": list(range(0, 4)),
     # "devices": list(range(4, torch.cuda.device_count())),
     # "devices": list(range(0, torch.cuda.device_count())),
+    "devices": list(range(1, torch.cuda.device_count())),
     # "devices": [3, 4, 5, 6, 7],
     # "num_workers": 1,
-    "num_workers": 1,
+    "num_workers": 4,
     # "num_workers": 5,
     # "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
@@ -113,7 +114,7 @@ trainer = pl.Trainer(
         val_checkpoint_callback,
         latest_checkpoint_callback,
         ReconstructionVisualization(channels=None, mode="fucci", every_n_epochs=1),
-        # FUCCIPredictionLogger(every_n_epochs=1),
+        FUCCIPredictionLogger(every_n_epochs=1),
     ]
 )
 

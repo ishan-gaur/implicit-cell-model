@@ -278,6 +278,7 @@ class FUCCIPredictionLogger(Callback):
         super().__init__()
         self.num_images = num_images
         self.every_n_epochs = every_n_epochs
+        self.num_batches = 0
 
     def __get_predictions(self, input_imgs, pl_module, trainer):
         input_imgs = input_imgs.to(pl_module.device)
@@ -296,10 +297,20 @@ class FUCCIPredictionLogger(Callback):
         states = with_G2 + torch.where((level > -0.5) & (level < 0.5), torch.ones_like(level), torch.zeros_like(level))
         return states
     
-    def __shared_logging(self, sample_imgs, pl_module, trainer):
-            pred = self.__get_predictions(sample_imgs[:, :2], pl_module, trainer)
+    def __shared_logging(self, dataloader, pl_module, trainer):
+            if self.num_batches < 1:
+                self.num_batches = self.num_images // len(next(iter(trainer.datamodule.train_dataloader())))
 
-            fucci_level_pred = self.__fucci_level_from_image(pred).cpu()
+            preds = []
+            sample_imgs = []
+            for _ in range(self.num_batches):
+                sample_img = next(iter(dataloader))
+                sample_imgs.append(sample_img)
+                preds.append(self.__get_predictions(sample_img[:, :2], pl_module, trainer))
+            preds = torch.cat(preds, dim=0)
+            sample_imgs = torch.cat(sample_imgs, dim=0)
+
+            fucci_level_pred = self.__fucci_level_from_image(preds).cpu()
             fucci_level_target = self.__fucci_level_from_image(sample_imgs[:, 2:]).cpu()
             trainer.logger.experiment.log({
                 f"{trainer.state.stage}/fucci_level_error_hist": wandb.Histogram(
@@ -336,13 +347,8 @@ class FUCCIPredictionLogger(Callback):
             fucci_states_target = torch.cat([fucci_states_target, torch.Tensor([0, 1, 2, 0, 1, 2, 0, 1, 2])])
             fucci_states_pred = torch.cat([fucci_states_pred, torch.Tensor([0, 1, 2, 1, 2, 0, 2, 0, 1])])
             conf_matrix = confusion_matrix(fucci_states_target, fucci_states_pred)
-            print(torch.unique(fucci_states_target))
-            print(torch.unique(fucci_states_target, return_counts=True))
-            print(torch.unique(fucci_states_pred))
-            print(torch.unique(fucci_states_pred, return_counts=True))
-            print(conf_matrix)
             plt.clf()
-            ax = sns.heatmap(conf_matrix, annot=True, fmt='d')
+            ax = sns.heatmap(conf_matrix, annot=True, fmt='d', vmin=0, vmax=self.num_images)
             ax.set_xlabel("Predicted")
             # ax.xaxis.set_ticklabels(["G1", "S", "G2"])
             ax.set_ylabel("Target")
@@ -350,22 +356,19 @@ class FUCCIPredictionLogger(Callback):
             trainer.logger.experiment.log({
                 f"{trainer.state.stage}/fucci_states_confusion_matrix":
                     wandb.Image(ax.figure, caption="Confusion matrix for FUCCI states")
-            }, rank_zero_only=True)
+            })
             plt.clf()
-
-    # @rank_zero_only
+    
+    @rank_zero_only
     def on_train_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
-            input_imgs = trainer.datamodule.train_dataloader().dataset[:self.num_images]
-            print(input_imgs.shape)
-            self.__shared_logging(input_imgs, pl_module, trainer)
+            self.__shared_logging(trainer.datamodule.train_dataloader(), pl_module, trainer)
     
-    # @rank_zero_only
+    @rank_zero_only
     def on_validation_epoch_end(self, trainer, pl_module):
         if trainer.current_epoch % self.every_n_epochs == 0:
-            input_imgs = trainer.datamodule.val_dataloader().dataset[:self.num_images]
-            self.__shared_logging(input_imgs, pl_module, trainer)
+            self.__shared_logging(trainer.datamodule.val_dataloader(), pl_module, trainer)
 
+    @rank_zero_only
     def on_test_end(self, trainer, pl_module):
-        input_imgs = trainer.datamodule.test_dataloader().dataset[:self.num_images]
-        self.__shared_logging(input_imgs, pl_module, trainer)
+        self.__shared_logging(trainer.datamodule.test_dataloader(), pl_module, trainer)
