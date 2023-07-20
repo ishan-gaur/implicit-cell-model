@@ -58,7 +58,11 @@ class FUCCIDataModule(pl.LightningDataModule):
         if len(self.split) != 3:
             raise ValueError("split must be a tuple of length 3")
         if deterministic:
+<<<<<<< HEAD
             generator = torch.Generator().manual_seed(420)
+=======
+            generator = torch.Generator().manual_seed(42)
+>>>>>>> pretrained model for fucci prediction and deterministic splits
             self.data_train, self.data_val, self.data_test = random_split(self.dataset, self.split, generator=generator)
         else:
             self.data_train, self.data_val, self.data_test = random_split(self.dataset, self.split)
@@ -98,6 +102,9 @@ class FUCCIModel(pl.LightningModule):
         latent_dim: int = 512, # TODO this should be accessible from the autoencoder
         lr: float = 1e-6,
         map_widths: Tuple[int, ...] = (2, 2), # width multiplier for each layer
+        train_all: bool = False,
+        train_encoder: bool = False,
+        train_decoder: bool = False,
     ):
 
         super().__init__()
@@ -122,6 +129,10 @@ class FUCCIModel(pl.LightningModule):
             self.maps_out.append(torch.compile(MapperOut(self.ae_latent, self.map_widths)))
 
         self.latent_dim = latent_dim * self.map_widths[-1]
+
+        self.train_all = train_all
+        self.train_encoder = train_encoder
+        self.train_decoder = train_decoder
 
     def reparameterized_sampling(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
@@ -212,15 +223,24 @@ class FUCCIModel(pl.LightningModule):
     def configure_optimizers(self):
         # only want to train the maps
         for param in self.encoder.parameters():
-            param.requires_grad = False
+            param.requires_grad = self.train_all or self.train_encoder
         for param in self.decoder.parameters():
-            param.requires_grad = False
+            param.requires_grad = self.train_all or self.train_decoder
+
         parameters = []
         for c in range(len(self.channels_in)):
             parameters.extend(self.maps_in[c].parameters())
         for c in range(len(self.channels_out)):
             parameters.extend(self.maps_out[c].parameters())
+        print("\tTraining input and output maps")
+        if self.train_encoder or self.train_all:
+            parameters.extend(self.encoder.parameters())
+            print("\tTraining encoder")
+        if self.train_decoder or self.train_all:
+            parameters.extend(self.decoder.parameters())
+            print("\tTraining decoder")
         optimizer = optim.Adam(parameters, lr=self.lr)
+
         return optimizer
 
     def training_step(self, batch, batch_idx):

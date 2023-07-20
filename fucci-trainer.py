@@ -19,32 +19,38 @@ torch.set_float32_matmul_precision('medium')
 parser = argparse.ArgumentParser(description="Train a model to predict FUCCI channels from reference.",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("-d", "--data", required=True, help="path to dataset")
-parser.add_argument("-c", "--cpu", action="store_true", help="run on CPU")
 parser.add_argument("-e", "--epochs", type=int, default=100, help="maximum number of epochs to train for")
-parser.add_argument("-m", "--checkpoint", help="path to checkpoint to load from")
+parser.add_argument("-m", "--checkpoint", help="path to checkpoint for common pretrained autoencoder")
+parser.add_argument("-p", "--pretrained", help="path to pretrained model to load from")
+parser.add_argument("-a", "--all", action="store_true", help="train all of the model parameters")
+parser.add_argument("-f", "--featurizer", action="store_true", help="train the featurizer model as well")
+parser.add_argument("-g", "--generation", action="store_true", help="train the generation model as well")
+parser.add_argument("-c", "--cpu", action="store_true", help="run on CPU")
 
 args = parser.parse_args()
 
 if args.checkpoint is not None:
     if not Path(args.checkpoint).exists():
         raise ValueError("Checkpoint path does not exist.")
+    else:
+        chkpt = Path(args.checkpoint)
     
 config = {
     "imsize": 256,
     "latent_dim": 512,
     "batch_size": 8,
-    "devices": [7],
+    # "devices": [7],
     # "devices": list(range(0, 4)),
     # "devices": list(range(4, torch.cuda.device_count())),
-    # "devices": list(range(0, torch.cuda.device_count())),
-    "devices": list(range(1, torch.cuda.device_count())),
+    "devices": list(range(0, torch.cuda.device_count())),
+    # "devices": list(range(1, torch.cuda.device_count())),
     # "devices": [3, 4, 5, 6, 7],
-    # "num_workers": 1,
-    "num_workers": 4,
+    "num_workers": 1,
+    # "num_workers": 4,
     # "num_workers": 5,
     # "num_workers": 8,
     "split": (0.64, 0.16, 0.2),
-    "lr": 5e-5,
+    "lr": 5e-10,
     "grad_clip": 1e3,
     # "eps": 1e-12,
     "epochs": args.epochs,
@@ -75,12 +81,21 @@ dm = FUCCIDataModule(
 )
 
 print_with_time("Setting up model...")
-model = FUCCIModel(
-    ae_checkpoint=chkpt,
-    latent_dim=config["latent_dim"],
-    lr=config["lr"],
-    map_widths=config["mapper_mults"]
-)
+if args.pretrained is not None:
+    model = FUCCIModel.load_from_checkpoint(args.pretrained)
+    model.train_all = args.all
+    model.train_generation = args.generation
+    model.lr = config["lr"]
+else:
+    model = FUCCIModel(
+        ae_checkpoint=chkpt,
+        latent_dim=config["latent_dim"],
+        lr=config["lr"],
+        map_widths=config["mapper_mults"],
+        train_all=args.all,
+        train_encoder=args.featurizer,
+        train_decoder=args.generation
+    )
 
 wandb_logger = WandbLogger(
     project=project_name,
@@ -110,6 +125,7 @@ trainer = pl.Trainer(
     logger=wandb_logger,
     max_epochs=config["epochs"],
     gradient_clip_val=config["grad_clip"],
+    deterministic=True,
     callbacks=[
         val_checkpoint_callback,
         latest_checkpoint_callback,
