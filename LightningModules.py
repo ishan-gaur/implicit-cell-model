@@ -8,9 +8,11 @@ from torch import optim
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, random_split
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau, LinearLR
 import lightning.pytorch as pl
 import numpy as np
+
+from kornia.augmentation import RandomRotation, RandomGaussianBlur, RandomSharpness
 
 
 from FUCCIDataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
@@ -58,11 +60,7 @@ class FUCCIDataModule(pl.LightningDataModule):
         if len(self.split) != 3:
             raise ValueError("split must be a tuple of length 3")
         if deterministic:
-<<<<<<< HEAD
             generator = torch.Generator().manual_seed(420)
-=======
-            generator = torch.Generator().manual_seed(42)
->>>>>>> pretrained model for fucci prediction and deterministic splits
             self.data_train, self.data_val, self.data_test = random_split(self.dataset, self.split, generator=generator)
         else:
             self.data_train, self.data_val, self.data_test = random_split(self.dataset, self.split)
@@ -92,6 +90,31 @@ class FUCCIDataModule(pl.LightningDataModule):
         return self.dataset.channel_colors()
 
 
+class Bundle(nn.Module):
+    def __init__(self, maps: List[Tuple[nn.Module, nn.Module]]):
+        super().__init__()
+        self.maps = maps
+
+
+class DataAugmentation(nn.Module):
+    """Module to perform data augmentation using Kornia on torch tensors."""
+
+    def __init__(self, apply_color_jitter: bool = False) -> None:
+        super().__init__()
+        self._apply_color_jitter = apply_color_jitter
+
+        self.transforms = nn.Sequential(
+            RandomRotation(degrees=180.0, p=1.0),
+            RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.0, 1.0), p=0.5),
+            RandomSharpness(p=0.5),
+        )
+
+    @torch.no_grad()  # disable gradients for effiency
+    def forward(self, x):
+        x_out = self.transforms(x)  # BxCxHxW
+        return x_out
+
+
 class FUCCIModel(pl.LightningModule):
     def __init__(self,
         ae_checkpoint: Path,
@@ -105,6 +128,8 @@ class FUCCIModel(pl.LightningModule):
         train_all: bool = False,
         train_encoder: bool = False,
         train_decoder: bool = False,
+        warmup: bool = False,
+        augmentation: bool = False
     ):
 
         super().__init__()
@@ -133,11 +158,21 @@ class FUCCIModel(pl.LightningModule):
         self.train_all = train_all
         self.train_encoder = train_encoder
         self.train_decoder = train_decoder
+        self.warmup = warmup
+        self.augmentation = augmentation
+
+        self.transform = DataAugmentation()
 
     def reparameterized_sampling(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return eps.mul(std).add_(mu)
+
+    def on_after_batch_transfer(self, batch, dataloader_idx):
+        x = batch
+        if self.trainer.training and self.augmentation:
+            x = self.transform(x)
+        return x
 
     def encode(self, x): # x is B x C(2) x H x W
         # predicted variance for the autoencoder checkpoint is 0
@@ -241,7 +276,19 @@ class FUCCIModel(pl.LightningModule):
             print("\tTraining decoder")
         optimizer = optim.Adam(parameters, lr=self.lr)
 
+        if self.warmup and (self.train_all or self.train_encoder or self.train_decoder):
+            print("\tUsing Linear Warmup from 0.01 to 1 over 10 epochs")
+            scheduler = LinearLR(optimizer, start_factor=1e-2, end_factor=1, total_iters=10)
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": scheduler,
+            }
+
         return optimizer
+
+    def lr_scheduler_step(self, scheduler, metric):
+        scheduler.step(metric)
+        self.logger.experiment.log({"lr": scheduler.get_last_lr()[0]})
 
     def training_step(self, batch, batch_idx):
         loss = self.__shared_step(batch, "train")

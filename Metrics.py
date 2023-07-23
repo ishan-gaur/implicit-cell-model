@@ -290,7 +290,7 @@ class FUCCIPredictionLogger(Callback):
 
     def __fucci_level_from_image(self, img):
         # TODO: this is a problem if the denominator is small although this only happens for mitotic cells
-        return torch.sum(img[:, 1] - img[:, 0], dim=(1,2)) / torch.sum(img, dim=(1,2,3))
+        return torch.sum(img[:, 0] - img[:, 1], dim=(1,2)) / torch.sum(img, dim=(1,2,3))
 
     def __fucci_states_from_level(self, level):
         with_G2 = torch.where(level > 0.5, 2 * torch.ones_like(level), torch.zeros_like(level))
