@@ -14,10 +14,15 @@ import numpy as np
 
 from kornia.augmentation import RandomRotation, RandomGaussianBlur, RandomSharpness
 
+import wandb
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 from FUCCIDataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
 from FUCCIDataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, FUCCIChannelDatasetInMemory, TotalDatasetInMemory
 from models import Encoder, ImageEncoder, Decoder, ImageDecoder, MapperIn, MapperOut, Discriminator
+from Metrics import FUCCIPredictionLogger
 
 class FUCCIDataModule(pl.LightningDataModule):
     def __init__(self, data_dir, dataset, batch_size, num_workers, 
@@ -90,12 +95,6 @@ class FUCCIDataModule(pl.LightningDataModule):
         return self.dataset.channel_colors()
 
 
-class Bundle(nn.Module):
-    def __init__(self, maps: List[Tuple[nn.Module, nn.Module]]):
-        super().__init__()
-        self.maps = maps
-
-
 class DataAugmentation(nn.Module):
     """Module to perform data augmentation using Kornia on torch tensors."""
 
@@ -105,8 +104,8 @@ class DataAugmentation(nn.Module):
 
         self.transforms = nn.Sequential(
             RandomRotation(degrees=180.0, p=1.0),
-            RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.0, 1.0), p=0.5),
-            RandomSharpness(p=0.5),
+            # RandomGaussianBlur(kernel_size=(3, 3), sigma=(0.0, 1.0), p=0.5),
+            # RandomSharpness(p=0.5),
         )
 
     @torch.no_grad()  # disable gradients for effiency
@@ -316,6 +315,135 @@ class FUCCIModel(pl.LightningModule):
                 return self.forward_embedding(batch)
         else:
             raise ValueError(f"mode must be one of {self.get_predict_modes()}, got {self.predict_mode}")
+
+
+class FUCCIClassifier(pl.LightningModule):
+    def __init__(self,
+        ae_checkpoint: Path,
+        latent_dim: int = 512, # TODO this should be accessible from the autoencoder
+        lr: float = 1e-6,
+        layer_widths: Tuple[int, ...] = (2, 2), # width multiplier for each layer
+        train_all: bool = False,
+        warmup: bool = False,
+        augmentation: bool = False
+    ):
+
+        # predicts one of three fucci buckets from the autoencoder embedding
+
+        super().__init__()
+        self.save_hyperparameters()
+        self.channels_in = ["DAPI", "gamma-tubulin"]
+        self.eps = 1e-6 # just above e^-20
+        self.lr = lr
+
+        ae = AutoEncoder.load_from_checkpoint(ae_checkpoint)
+        self.encoder = ae.encoder
+        self.latent_dim = latent_dim
+        self.classifier = nn.ModuleList(nn.Sequential(
+            nn.Linear(latent_dim * 2, layer_widths[0] * latent_dim),
+            nn.LeakyReLU(inplace=True),
+        ))
+        for i in range(1, len(layer_widths)):
+            self.classifier.append(nn.Sequential(
+                nn.Linear(layer_widths[i-1] * latent_dim, layer_widths[i] * latent_dim),
+                nn.LeakyReLU(inplace=True),
+            ))
+        self.classifier.append(nn.Linear(layer_widths[-1] * latent_dim, 3))
+        self.classifier.append(nn.Softmax(dim=1))
+        self.classifier = nn.Sequential(*self.classifier)
+        self.classifer = torch.compile(self.classifier)
+
+        self.train_all = train_all
+        self.warmup = warmup
+        self.augmentation = augmentation
+
+        self.transform = DataAugmentation()
+        self.loss = nn.CrossEntropyLoss()
+
+    def on_after_batch_transfer(self, batch, dataloader_idx):
+        x = batch
+        if self.trainer.training and self.augmentation:
+            x = self.transform(x)
+        return x
+
+    def sample_average(self, mus, logvars): # mus and logvars are lists of B x latent_dim for each channel
+        mus = torch.stack(mus, dim=1) # B x c x latent_dim
+        mu = mus.mean(dim=1) # B x latent_dim
+        vars = torch.stack(logvars, dim=1).exp()
+        var = (vars + mus.pow(2)).mean(dim=1) - mus.mean(dim=1).pow(2)
+        logvar = var.log()
+        return mu, logvar
+    
+    def forward(self, x):
+        # x = x[:, :2]
+        mus, logvars = [], []
+        for c in range(len(self.channels_in)):
+            mu, logvar = self.encoder(x[..., c:c+1, :, :])
+            mus.append(mu)
+            logvars.append(logvar)
+        mu, logvar = self.sample_average(mus, logvars)
+        embedding = torch.cat([mu, logvar], dim=1)
+        print(embedding.shape)
+        logits = self.classifier(embedding)
+        return logits
+
+    def __shared_step(self, batch, stage):
+        x = batch[:, :2]
+        y = FUCCIPredictionLogger.fucci_level_from_image(batch[:, 2:])
+        y = FUCCIPredictionLogger.fucci_states_from_level(y).long()
+        logits = self.forward(x)
+        loss = self.loss(logits, y)
+        self.log(f'{stage}/loss', loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log_confusion_matrix(logits, y, stage)
+        return loss
+
+    def log_confusion_matrix(self, logits, y, stage):
+        y_pred = logits.argmax(dim=1).cpu()
+        y = torch.clone(y).cpu()
+        conf_matrix = confusion_matrix(y, y_pred)
+        for target in range(conf_matrix.shape[0]):
+            for pred in range(conf_matrix.shape[1]):
+                self.log(f"{stage}/confusion_matrix-{target}-{pred}", conf_matrix[target, pred],
+                         sync_dist=True, reduce_fx=torch.sum,
+                         on_step=False, on_epoch=True, prog_bar=False)
+            
+    def configure_optimizers(self):
+        # only want to train the maps
+        for param in self.encoder.parameters():
+            param.requires_grad = self.train_all
+
+        parameters = []
+        parameters.extend(self.classifier.parameters())
+        if self.train_all:
+            parameters.extend(self.encoder.parameters())
+            print("\tTraining encoder")
+        optimizer = optim.Adam(parameters, lr=self.lr)
+
+        if self.warmup:
+            print("\tUsing Linear Warmup from 0.01 to 1 over 10 epochs")
+            scheduler = LinearLR(optimizer, start_factor=1e-2, end_factor=1, total_iters=10)
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": scheduler,
+            }
+
+        return optimizer
+
+    def lr_scheduler_step(self, scheduler, metric):
+        scheduler.step(metric)
+        self.logger.experiment.log({"lr": scheduler.get_last_lr()[0]})
+
+    def training_step(self, batch, batch_idx):
+        loss = self.__shared_step(batch, "train")
+        return loss
+    
+    def validation_step(self, batch, batch_idx):
+        loss = self.__shared_step(batch, "validate")
+        return loss
+    
+    def test_step(self, batch, batch_idx):
+        loss = self.__shared_step(batch, "test")
+        return loss
 
 
 class MultiModalAutoencoder(pl.LightningModule):

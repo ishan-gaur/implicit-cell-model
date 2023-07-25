@@ -288,11 +288,11 @@ class FUCCIPredictionLogger(Callback):
             pl_module.train()
         return pred
 
-    def __fucci_level_from_image(self, img):
+    def fucci_level_from_image(img):
         # TODO: this is a problem if the denominator is small although this only happens for mitotic cells
         return torch.sum(img[:, 0] - img[:, 1], dim=(1,2)) / torch.sum(img, dim=(1,2,3))
 
-    def __fucci_states_from_level(self, level):
+    def fucci_states_from_level(level):
         with_G2 = torch.where(level > 0.5, 2 * torch.ones_like(level), torch.zeros_like(level))
         states = with_G2 + torch.where((level > -0.5) & (level < 0.5), torch.ones_like(level), torch.zeros_like(level))
         return states
@@ -310,8 +310,8 @@ class FUCCIPredictionLogger(Callback):
             preds = torch.cat(preds, dim=0)
             sample_imgs = torch.cat(sample_imgs, dim=0)
 
-            fucci_level_pred = self.__fucci_level_from_image(preds).cpu()
-            fucci_level_target = self.__fucci_level_from_image(sample_imgs[:, 2:]).cpu()
+            fucci_level_pred = FUCCIPredictionLogger.fucci_level_from_image(preds).cpu()
+            fucci_level_target = FUCCIPredictionLogger.fucci_level_from_image(sample_imgs[:, 2:]).cpu()
             trainer.logger.experiment.log({
                 f"{trainer.state.stage}/fucci_level_error_hist": wandb.Histogram(
                     (fucci_level_pred - fucci_level_target).cpu().numpy()
@@ -342,8 +342,8 @@ class FUCCIPredictionLogger(Callback):
                 )
             })
 
-            fucci_states_target = self.__fucci_states_from_level(fucci_level_target).cpu()
-            fucci_states_pred = self.__fucci_states_from_level(fucci_level_pred).cpu()
+            fucci_states_target = FUCCIPredictionLogger.fucci_states_from_level(fucci_level_target).cpu()
+            fucci_states_pred = FUCCIPredictionLogger.fucci_states_from_level(fucci_level_pred).cpu()
             fucci_states_target = torch.cat([fucci_states_target, torch.Tensor([0, 1, 2, 0, 1, 2, 0, 1, 2])])
             fucci_states_pred = torch.cat([fucci_states_pred, torch.Tensor([0, 1, 2, 1, 2, 0, 2, 0, 1])])
             conf_matrix = confusion_matrix(fucci_states_target, fucci_states_pred)
