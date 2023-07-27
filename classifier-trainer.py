@@ -44,6 +44,7 @@ config = {
     # "devices": list(range(4, torch.cuda.device_count())),
     # "devices": list(range(0, torch.cuda.device_count())),
     # "devices": list(range(2, torch.cuda.device_count())),
+    "devices": [1, 2, 3],
     # "devices": [2, 3, 4, 5, 6, 7],
     "num_workers": 1,
     # "num_workers": 4,
@@ -54,7 +55,7 @@ config = {
     "grad_clip": 1e3,
     # "eps": 1e-12,
     "epochs": args.epochs,
-    "mapper_mults": (1, 1),
+    "mapper_mults": (2, 2, 2),
     "warmup": args.warmup,
     "augmentation": args.augment,
 }

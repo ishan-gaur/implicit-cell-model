@@ -383,7 +383,6 @@ class FUCCIClassifier(pl.LightningModule):
             logvars.append(logvar)
         mu, logvar = self.sample_average(mus, logvars)
         embedding = torch.cat([mu, logvar], dim=1)
-        print(embedding.shape)
         logits = self.classifier(embedding)
         return logits
 
