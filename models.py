@@ -156,7 +156,7 @@ class ImageEncoder(nn.Module):
     def forward(self, x):
         for layer in self.layers:
             x = layer(x)
-        x = x.view(-1, self.fc_input_size)
+        x = x.reshape((-1, self.fc_input_size))
         return self.fc_mu(x)
 
 

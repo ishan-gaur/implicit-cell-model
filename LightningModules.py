@@ -250,8 +250,11 @@ class MultiModalAutoencoder(pl.LightningModule):
         return loss
 
     def training_step(self, batch, batch_idx):
-        loss = self.__shared_step(batch, "train")
-        return loss
+        if self.predict_mode == "embedding":
+            return self.forward_embedding(batch)
+        else:
+            loss = self.__shared_step(batch, "train")
+            return loss
     
     def validation_step(self, batch, batch_idx):
         loss = self.__shared_step(batch, "validate")
@@ -271,8 +274,7 @@ class MultiModalAutoencoder(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx):
         if self.predict_mode == "embedding":
-            with torch.inference_mode(mode=False):
-                return self.forward_embedding(batch)
+            return self.forward_embedding(batch)
         else:
             raise ValueError(f"mode must be one of {self.get_predict_modes()}, got {self.predict_mode}")
     
