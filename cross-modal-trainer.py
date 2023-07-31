@@ -113,7 +113,7 @@ dm = FUCCIDataModule(
 
 if args.checkpoint is None:
     print("Using MultiModalAutoencoder")
-    model = CrossModalAutoencoder(
+    model = MultiModalAutoencoder(
         nc=2,
         nf=config["nf"],
         ch_mult=(1, 2, 4, 8, 8, 8),
