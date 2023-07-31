@@ -53,6 +53,24 @@ class MapperOut(nn.Module):
         return z
 
 
+class Discriminator(nn.Module):
+    def __init__(self,
+        num_classes: int = 1,
+        input_dim: int = 512,
+    ):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        self.layers.append(torch.nn.Linear(input_dim, input_dim))
+        self.layers.append(torch.nn.LeakyReLU(inplace=True))
+        self.layers.append(torch.nn.Linear(input_dim, num_classes))
+        self.softmax = torch.nn.Softmax(dim=1)
+
+    def forward(self, z):
+        for layer in self.layers:
+            z = layer(z)
+        return self.softmax(z)
+
+
 class Encoder(nn.Module):
     # def __init__(self, nc=1, nf=128, ch_mult=(1, 2, 4, 8, 8, 8), imsize=256, latent_dim=512, estimate_var=True):
     def __init__(self, nc=1, nf=128, ch_mult=(1, 2, 4, 8, 8, 8), imsize=256, latent_dim=512):

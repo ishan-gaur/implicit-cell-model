@@ -22,12 +22,12 @@ import wandb
 
 from FUCCIDataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
 from FUCCIDataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, FUCCIChannelDatasetInMemory, TotalDatasetInMemory
-from models import Encoder, ImageEncoder, Decoder, ImageDecoder, MapperIn, MapperOut
+from models import Encoder, ImageEncoder, Decoder, ImageDecoder, MapperIn, MapperOut, Discriminator
 
 class FUCCIDataModule(pl.LightningDataModule):
     def __init__(self, data_dir, dataset, batch_size, num_workers, 
                  imsize=256, split=(0.64, 0.16, 0.2), in_memory=True,
-                 permutation=None):
+                 permutation=None, deterministic=True):
         super().__init__()
         if not isinstance(data_dir, Path):
             data_dir = Path(data_dir)
@@ -64,7 +64,11 @@ class FUCCIDataModule(pl.LightningDataModule):
         self.split = split
         if len(self.split) != 3:
             raise ValueError("split must be a tuple of length 3")
-        self.data_train, self.data_val, self.data_test = random_split(self.dataset, self.split)
+        if deterministic:
+            generator = torch.Generator().manual_seed(420)
+            self.data_train, self.data_val, self.data_test = random_split(self.dataset, self.split, generator=generator)
+        else:
+            self.data_train, self.data_val, self.data_test = random_split(self.dataset, self.split)
         
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -91,10 +95,7 @@ class FUCCIDataModule(pl.LightningDataModule):
         return self.dataset.channel_colors()
 
 
-class Bundle(nn.Module):
-    def __init__(self, maps: List[Tuple[nn.Module, nn.Module]]):
-        super().__init__()
-        self.maps = maps
+
 
 
 class MultiModalAutoencoder(pl.LightningModule):
@@ -110,7 +111,10 @@ class MultiModalAutoencoder(pl.LightningModule):
         patience: int = 4, # number of epochs to wait before reducing lr
         channels: List[str] = [], # names of the channels for each mapping
         map_widths: Tuple[int, ...] = (2, 2), # width multiplier for each layer
-        lambda_kl: float = 1.0, # weight for kl divergence loss
+        lambda_kl: float = 0.5, # weight for kl divergence loss
+        lambda_div: float = 0.5, # weight for the discriminator
+        alt_training: bool = False, # whether to alternate training of the discriminator and the autoencoder
+        alt_batch_ct: int = 4 * 4465, # number of batches to alternate over
     ):
 
         super().__init__()
@@ -126,6 +130,11 @@ class MultiModalAutoencoder(pl.LightningModule):
         self.factor = factor
         self.patience = patience
         self.lambda_kl = lambda_kl
+        self.lambda_div = lambda_div
+        self.alt_training = alt_training
+        self.alt_batch_ct = alt_batch_ct
+        self.wait_periods = 0
+        self.wait_threshold = 20
 
         self.map_widths = map_widths
         self.maps_in = nn.ModuleList()
@@ -135,6 +144,11 @@ class MultiModalAutoencoder(pl.LightningModule):
             self.add_mapping(channel)
 
         self.latent_dim = latent_dim * self.map_widths[-1]
+
+        self.discriminator = torch.compile(Discriminator(num_classes=len(self.channels), input_dim=self.latent_dim))
+        # self.discriminator = None
+        if self.discriminator is not None:
+            self.automatic_optimization = False
 
     def add_mapping(self, channel):
         print(f"adding channel {channel}")
@@ -184,10 +198,12 @@ class MultiModalAutoencoder(pl.LightningModule):
             logvar.append(l)
         return mu, logvar
 
+
     def kl_loss(self, mu, logvar):
-        var = torch.exp(logvar)
-        covar = torch.diag_embed(var)
-        return torch.sum(logvar) + torch.sum(torch.linalg.inv(covar)) + torch.sum(mu.pow(2))
+        # var = torch.exp(logvar)
+        # covar = torch.diag_embed(var)
+        # return torch.sum(logvar) + torch.sum(torch.linalg.inv(covar)) + torch.sum(mu.pow(2))
+        return -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
         # return torch.sum(logvar) + torch.sum(torch.exp(-logvar + self.eps)) + torch.sum(mu.pow(2))
 
     def sigma_reconstruction_loss(self, x, x_hat):
@@ -216,45 +232,87 @@ class MultiModalAutoencoder(pl.LightningModule):
         # create a tensor that is the same shape as embeddings but with the selected channel zeroed out
         # use this to get the average embedding
         # decode this average embedding and compare to the original image
+        raise NotImplementedError
     
-    def __shared_step(self, batch, stage):
+    def discriminator_loss(self, embeddings):
+        # embeddings is 4 x N x latent_dim
+        flat_embeddings = torch.clone(embeddings).flatten(0, 1)
+        target_channels = torch.tensor([[i for _ in range(embeddings.shape[1])] for i in range(len(self.channels))], device=self.device)
+        target_channels = target_channels.flatten()
+        predicted_channels = self.discriminator(flat_embeddings)
+        loss = F.cross_entropy(predicted_channels, target_channels)
+        return loss
+
+    def __shared_opt_step(self, loss, optimizer, clip_val=0.5, retain_graph=False):
+        self.toggle_optimizer(optimizer)
+        optimizer.zero_grad()
+        # self.manual_backward(loss, retain_graph=retain_graph)
+        self.manual_backward(loss)
+        self.clip_gradients(optimizer, gradient_clip_val=clip_val, gradient_clip_algorithm='norm')
+        optimizer.step()
+        self.untoggle_optimizer(optimizer)
+    
+    def __shared_step(self, batch, stage, batch_idx=None):
         # put all through encoding and calculate regularization term against prior
         # for each channel select a random output channel and calculate regularization loss
         embeddings = torch.zeros((batch.shape[1], batch.shape[0], self.latent_dim), device=self.device) # 4 x N x latent_dim
+        opt_g, opt_d = self.optimizers()
         # batch is N x 4 x 256 x 256
         batch = batch.transpose(0, 1) # 4 x N x 256 x 256
         batch = batch[:, :, None, ...] # 4 x N x 1 x 256 x 256
-        loss_kl = 0
+        # loss_kl = 0
         for channel, channel_batch in enumerate(batch):
             mu, logvar = self.encode(channel_batch, channel)
-            kl = self.kl_loss(mu, logvar)
-            self.log(f'{stage}/kl_loss_{self.channels[channel]}', kl, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-            loss_kl += kl
+            # kl = self.kl_loss(mu, logvar)
+            # self.log(f'{stage}/kl_loss_{self.channels[channel]}', kl, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+            # loss_kl += kl
             embeddings[channel] = self.reparameterized_sampling(mu, logvar)
 
-        mse_loss, x_hat, x_target = self.reg_mse_loss(embeddings, batch)
-        perm_loss, perm_x_hat, perm_x_target = self.perm_mse_loss(embeddings, batch)
+        _, x_hat, x_target = self.reg_mse_loss(embeddings, batch)
+        # _, perm_x_hat, perm_x_target = self.perm_mse_loss(embeddings, batch)
         reg_recon_loss = self.sigma_reconstruction_loss(x_target, x_hat)
-        perm_recon_loss = self.sigma_reconstruction_loss(perm_x_target, perm_x_hat)
-        self.impute_mse_loss(embeddings, batch)
+        # perm_recon_loss = self.sigma_reconstruction_loss(perm_x_target, perm_x_hat)
+        discrim_loss = self.discriminator_loss(embeddings.detach())
+        # self.impute_mse_loss(embeddings, batch)
         # loss = mse_loss + self.lambda_kl * loss_kl
         # loss = mse_loss + perm_loss + self.lambda_kl * loss_kl
         # loss = recon_loss + loss_kl
         # loss = recon_loss + loss_kl + perm_loss
-        loss = 0.5 * (reg_recon_loss + perm_recon_loss) + loss_kl
+        # loss = 0.5 * (reg_recon_loss + perm_recon_loss) + loss_kl - self.discriminator_loss(embeddings)
+        # loss = (reg_recon_loss + loss_kl) - self.lambda_div * self.discriminator_loss(embeddings)
+        loss = reg_recon_loss - self.lambda_div * self.discriminator_loss(embeddings)
+        if stage == 'train':
+            if self.alt_training:
+                if ((batch_idx / self.alt_batch_ct) > self.wait_threshold and
+                    (batch_idx // self.alt_batch_ct) % 2 == 0):
+                    self.__shared_opt_step(reg_recon_loss, opt_d)
+            else:
+                self.__shared_opt_step(discrim_loss, opt_d)
+
+            if self.alt_training:
+                if ((batch_idx // self.alt_batch_ct) % 2 == 1 or
+                    (batch_idx / self.alt_batch_ct) <= self.wait_threshold):
+                    self.__shared_opt_step(loss, opt_g)
+            else:
+                self.__shared_opt_step(loss, opt_g)
 
         # self.log(f'{stage}/mse_loss', mse_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log(f'{stage}/perm_loss', perm_recon_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        # self.log(f'{stage}/perm_loss', perm_recon_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(f'{stage}/recon_loss', reg_recon_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(f'{stage}/discrim_loss', discrim_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log(f'{stage}/loss', loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        # if stage == "train":
+        #     opt_g, opt_d = self.optimizers()
+        #     # self.__shared_opt_step(loss, opt_g, retain_graph=True)
+        #     self.__shared_opt_step(discrim_loss, opt_d)
+        #     self.__shared_opt_step(loss, opt_g)
+
         return loss
 
     def training_step(self, batch, batch_idx):
-        if self.predict_mode == "embedding":
-            return self.forward_embedding(batch)
-        else:
-            loss = self.__shared_step(batch, "train")
-            return loss
+        loss = self.__shared_step(batch, "train", batch_idx)
+        return loss
     
     def validation_step(self, batch, batch_idx):
         loss = self.__shared_step(batch, "validate")
@@ -279,8 +337,13 @@ class MultiModalAutoencoder(pl.LightningModule):
             raise ValueError(f"mode must be one of {self.get_predict_modes()}, got {self.predict_mode}")
     
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=self.lr)
-        return optimizer
+        generator_parameters = list(self.encoder.parameters()) + list(self.decoder.parameters())
+        for c in range(len(self.channels)):
+            generator_parameters += list(self.maps_in[c].parameters())
+            generator_parameters += list(self.maps_out[c].parameters())
+        opt_g = optim.Adam(generator_parameters, lr=self.lr)
+        opt_d = optim.Adam(self.discriminator.parameters(), lr=self.lr)
+        return [opt_g, opt_d], []
     #     scheduler = ReduceLROnPlateau(
     #         optimizer,
     #         patience=self.patience,

@@ -8,6 +8,7 @@ import lightning.pytorch as pl
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
+from lightning.pytorch.strategies import DDPStrategy
 
 from LightningModules import AutoEncoder, FUCCIDataModule, CrossModalAutoencoder, MultiModalAutoencoder
 from LightningModules import ReconstructionVisualization, EmbeddingLogger
@@ -48,10 +49,12 @@ config = {
     "imsize": 256,
     "nf": 128,
     "batch_size": 8,
-    "devices": [4],
+    # "devices": [4],
+    # "devices": [0, 1, 3, 4, 5, 6, 7],
     "num_workers": 1,
     # "devices": list(range(0, 4)),
     # "devices": list(range(4, torch.cuda.device_count())),
+    "devices": list(range(1, torch.cuda.device_count())),
     # "devices": list(range(0, torch.cuda.device_count())),
     # "num_workers": 4,
     # "num_workers": 8,
@@ -65,7 +68,7 @@ config = {
     "epochs": args.epochs,
     "model": args.model,
     "latent_dim": 512,
-    "lambda": 1.0,
+    "lambda": 5e6,
 }
 
 fucci_path = Path(args.data)
@@ -174,11 +177,15 @@ elif args.model == "all":
             patience=config["patience"],
             channels=dm.get_channels(),
             map_widths=(1,),
-            lambda_kl=config["lambda"],
+            lambda_div=config["lambda"],
         )
     else:
         print("Loading MultiModalAutoEncoder from checkpoint")
-        model = MultiModalAutoencoder.load_from_checkpoint(args.checkpoint)
+        model = MultiModalAutoencoder.load_from_checkpoint(args.checkpoint, strict=False)
+        model.lr = config["lr"]
+        model.lr_eps = config["eps"]
+        model.patience = config["patience"]
+        model.lambda_div = config["lambda"]
 else:
     if args.model == "reference":
         nc = 2
@@ -223,6 +230,7 @@ trainer = pl.Trainer(
     default_root_dir=lightning_dir,
     accelerator="gpu" if not args.cpu else "cpu",
     devices=config["devices"] if not args.cpu else "auto",
+    strategy=DDPStrategy(find_unused_parameters=True),
     limit_train_batches=0.1 if args.dev else None,
     limit_val_batches=0.1 if args.dev else None,
     # fast_dev_run=10,
@@ -232,7 +240,7 @@ trainer = pl.Trainer(
     # log_every_n_steps=1,
     logger=wandb_logger,
     max_epochs=config["epochs"],
-    gradient_clip_val=5e5,
+    gradient_clip_val=5e5 if args.model != "all" else None,
     # gradient_clip_algorithm="norm",
     callbacks=[
         val_checkpoint_callback,
