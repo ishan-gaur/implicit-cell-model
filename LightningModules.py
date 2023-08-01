@@ -1,13 +1,14 @@
 import random
-from typing import List, Tuple
+from typing import List, Tuple, Union, Dict, Optional
 from pathlib import Path
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS
+from lightning.pytorch.utilities.combined_loader import CombinedLoader
 
 import torch
 from torch import optim
 from torch import nn
 from torch.nn import functional as F
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Dataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau, LinearLR
 import lightning.pytorch as pl
 import numpy as np
@@ -22,7 +23,62 @@ import matplotlib.pyplot as plt
 from FUCCIDataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
 from FUCCIDataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, FUCCIChannelDatasetInMemory, TotalDatasetInMemory
 from models import Encoder, ImageEncoder, Decoder, ImageDecoder, MapperIn, MapperOut, Discriminator
-from Metrics import FUCCIPredictionLogger
+from Metrics import FUCCIPredictionLogger 
+
+def broadcast_if_singular(arg, dtype, target):
+    if isinstance(arg, dtype):
+        inputs = {key: arg for key in target}
+    else:
+        inputs = arg
+        assert isinstance(arg, dict), f"Input should have been {dtype} or dict thereof, but got {type(arg)}"
+    return inputs
+
+class CrossModalDataModule(pl.LightningDataModule):
+    def __init__(self,
+        datasets: Dict[str, Dataset],
+        batch_size: Union[int, Dict[str, int]] = 8,
+        num_workers: Union[int, Dict[str, int]] = 1,
+        split: Union[Tuple[int, ...], Dict[str, Tuple[int, ...]]] = (0.64, 0.16, 0.2)
+    ):
+        super().__init__()
+        self.datasets = datasets
+        self.batch_size = broadcast_if_singular(batch_size, int, datasets)
+        self.num_workers = broadcast_if_singular(num_workers, int, datasets)
+        self.split = broadcast_if_singular(split, tuple, datasets)
+
+        for dataset in self.datasets.values():
+            assert isinstance(dataset, Dataset), f"Expected Dataset, got {type(dataset)}"
+        
+        assert len(self.datasets) == len(self.batch_size) == len(self.num_workers) == len(self.split), \
+            f"Expected same number of datasets, batch sizes, num_workers and splits, got {len(self.datasets)}, {len(self.batch_size)}, {len(self.num_workers)}, {len(self.split)}"
+        
+        self.train_datasets, self.val_datasets, self.test_datasets = {}, {}, {}
+        for name, dataset in self.datasets.items():
+            self.train_datasets[name], self.val_datasets[name], self.test_datasets[name] = random_split(dataset, self.split[name])
+        
+    def __shared_dataloader(self, dataset, name, shuffle=True):
+        return DataLoader(dataset, batch_size=self.batch_size[name], num_workers=self.num_workers[name], persistent_workers=True, shuffle=shuffle)
+
+    def __shared_combined_dataloader(self, datasets, shuffle=True):
+        # note that since unpaired data lives in different datasets, leaving shuffle alone and not resetting
+        # the seed everytime/sharing the random seed should work fine
+        return CombinedLoader({
+            name: self.__shared_dataloader(dataset, name, shuffle=shuffle)
+            for name, dataset in datasets.items()
+        }, "max_size_cycle")
+    
+    def train_dataloader(self):
+        return self.__shared_combined_dataloader(self.train_datasets)
+
+    def val_dataloader(self):
+        return self.__shared_combined_dataloader(self.val_datasets, shuffle=False)
+    
+    def test_dataloader(self):
+        return self.__shared_combined_dataloader(self.test_datasets, shuffle=False)
+
+    def get_datasets(self):
+        return datasets
+
 
 class FUCCIDataModule(pl.LightningDataModule):
     def __init__(self, data_dir, dataset, batch_size, num_workers, 
@@ -721,84 +777,94 @@ class MultiModalAutoencoder(pl.LightningModule):
 
 
 class CrossModalAutoencoder(pl.LightningModule):
+    """
+    Maintains a list of autoencoders for each modality (currently only does images)
+    Assumption is that you can do paired training where modalities use the same dataloader but different slices
+    """
     def __init__(self,
-        nc: int = 1, # number of channels
-        nf: int = 128, # number of filters
-        ch_mult: Tuple[int, ...] = (1, 2, 4, 8, 8, 8), # multiple of filters for each layer, each layer downsamples by 2
-        imsize: int = 256,
+        modalities: List[str], # names of each modality
+        dataloader_config: Dict[str, Tuple[str, Union[slice]]], # dictionary of modalities and their corresponding dataloaders and slices to use
+        nc: Union[int, Dict[str, int]] = 2, # number of channels
+        nf: Union[int, Dict[str, int]] = 128, # number of filters
+        ch_mult: Union[Tuple[int, ...], Dict[str, Tuple[int, ...]]] = (1, 2, 4, 8, 8, 8), # multiple of filters for each layer, each layer downsamples by 2
+        imsize: Union[int, Dict[str, int]] = 256,
         latent_dim: int = 512,
-        lr: float = 1e-6,
-        lr_eps: float = 1e-10, # minimum change in learning rate allowed (no update after this)
-        patience: int = 4, # number of epochs to wait before reducing lr
-        channels: List[str] = [], # names of the channels for each mapping
-        map_widths: Tuple[int, ...] = (2, 2), # width multiplier for each layer
+        lr: float = 5e-6,
     ):
 
         super().__init__()
         self.save_hyperparameters()
 
-        # self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim, estimate_var=False)
-        self.encoder = Encoder(nc, nf, ch_mult, imsize, latent_dim)
-        self.decoder = Decoder(nc, nf, ch_mult[::-1], imsize, latent_dim)
-        self.ae_latent = latent_dim
+        self.modalities = modalities
 
+        self.ncs = broadcast_if_singular(nc, int, self.modalities)
+        self.nfs = broadcast_if_singular(nf, int, self.modalities)
+        self.ch_mults = broadcast_if_singular(ch_mult, tuple, self.modalities)
+        self.imsizes = broadcast_if_singular(imsize, int, self.modalities)
+
+        self.models = nn.ModuleDict({
+            modality: nn.ModuleDict({
+                # "encoder": torch.compile(
+                #     Encoder(self.ncs[modality], self.nfs[modality], self.ch_mults[modality], self.imsizes[modality], latent_dim)
+                # ),
+                # "decoder": torch.compile(
+                #     Decoder(self.ncs[modality], self.nfs[modality], self.ch_mults[modality][::-1], self.imsizes[modality], latent_dim)
+                # ),
+                "encoder": Encoder(self.ncs[modality], self.nfs[modality], self.ch_mults[modality], self.imsizes[modality], latent_dim),
+                "decoder": Decoder(self.ncs[modality], self.nfs[modality], self.ch_mults[modality][::-1], self.imsizes[modality], latent_dim),
+            })
+            for modality in self.modalities
+        })
+
+        self.dataloader_config = dataloader_config
         self.lr = lr
-        self.lr_eps = lr_eps
-        self.patience = patience
-
-        self.map_widths = map_widths
-        self.maps = {}
-        self.channels = []
-        for channel in channels:
-            self.add_mapping(channel)
-
-    def add_mapping(self, channel):
-        print(f"adding channel {channel}")
-        self.channels.append(channel)
-        self.maps[channel] = {"encode": MapperIn(self.ae_latent, self.map_widths),
-                                "decode": MapperOut(self.ae_latent, self.map_widths)}
 
     def reparameterized_sampling(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return eps.mul(std).add_(mu)
 
-    def encode(self, x, channel):
-        if channel not in self.channels:
-            raise ValueError(f"channel {channel} not in {self.channels}. Please add_mapping or check spelling.")
-        # image_z = self.encoder(x)
-        image_z, _ = self.encoder(x)
-        mu, logvar = self.maps[channel]["encode"](image_z)
+    def __check_modality(self, modality):
+        if modality not in self.modalities:
+            raise ValueError(f"modality {modality} not in self.modalities: {self.modalities}.")
+
+    def encode(self, x, modality):
+        self.__check_modality(modality)
+        mu, logvar = self.models[modality]["encoder"](x)
         return mu, logvar
     
-    def decode(self, z, channel):
-        if channel not in self.channels:
-            raise ValueError(f"channel {channel} not in {self.channels}. Please add_mapping or check spelling.")
-        image_z = self.maps[channel]["decode"](z)
-        image = self.decoder(image_z)
+    def decode(self, z, modality):
+        self.__check_modality(modality)
+        image = self.models[modality]["decoder"](z)
         return image
 
     def forward(self, x):
+        x = {modality: x[dataset][:, data_slice] for modality, (dataset, data_slice) in self.dataloader_config.items()}
         x_hat = {}
-        for channel, images in x.items():
-            mu, logvar = self.encode(images, channel)
+        embeddings = {}
+        for modality, images in x.items():
+            mu, logvar = self.encode(images, modality)
             z = self.reparameterized_sampling(mu, logvar)
-            x_hat[channel] = self.decode(z, channel)
-        return x_hat
+            x_hat[modality] = self.decode(z, modality)
+            embeddings[modality] = z
+        return x_hat, embeddings
     
     def __shared_step(self, batch, stage):
         # put all through encoding and calculate regularization term against prior
         # for each channel select a random output channel and calculate regularization loss
-        embeddings = {}
-        for channel, images in batch.items():
-            mu, logvar = self.encode(images, channel)
-            embeddings[channel] = self.reparameterized_sampling(mu, logvar)
-        output_channels = random.sample(self.channels, len(self.channels))
-        x_hat = {channel: self.decode(embeddings[channel], output_channels[i]) for i, channel in enumerate(self.channels)}
-        x_target = {channel: batch[channel] for channel in output_channels}
-        x_hat = torch.cat([x_hat[channel] for channel in self.channels], dim=1)
-        x_target = torch.cat([x_target[channel] for channel in self.channels], dim=1)
-        loss = F.mse_loss(x_hat, x_target)
+        # embeddings = {}
+        # for modality, images in batch.items():
+        #     mu, logvar = self.encode(images, modality)
+        #     embeddings[modality] = self.reparameterized_sampling(mu, logvar)
+        # output_modality = random.sample(self.modality, len(self.modality))
+        # x_hat = {modality: self.decode(embeddings[modality], output_modality[i]) for i, modality in enumerate(self.modality)}
+        # x_target = {modality: batch[modality] for modality in output_modality}
+        # x_hat = torch.cat([x_hat[modality] for modality in self.modalities], dim=1)
+        # x_target = torch.cat([x_target[modality] for modality in self.modalities], dim=1)
+        # loss = F.mse_loss(x_hat, x_target)
+        x_hat, embeddings = self.forward(batch)
+        embeddings = embeddings[list(embeddings.keys())[0]]
+        loss = F.mse_loss(embeddings, torch.zeros_like(embeddings))
         self.log(f"{stage}/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
@@ -807,7 +873,7 @@ class CrossModalAutoencoder(pl.LightningModule):
         return loss
     
     def validation_step(self, batch, batch_idx):
-        loss = self.__shared_step(batch, "val")
+        loss = self.__shared_step(batch, "validate")
         return loss
     
     def test_step(self, batch, batch_idx):
