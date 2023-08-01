@@ -850,21 +850,7 @@ class CrossModalAutoencoder(pl.LightningModule):
         return x_hat, embeddings
     
     def __shared_step(self, batch, stage):
-        # put all through encoding and calculate regularization term against prior
-        # for each channel select a random output channel and calculate regularization loss
-        # embeddings = {}
-        # for modality, images in batch.items():
-        #     mu, logvar = self.encode(images, modality)
-        #     embeddings[modality] = self.reparameterized_sampling(mu, logvar)
-        # output_modality = random.sample(self.modality, len(self.modality))
-        # x_hat = {modality: self.decode(embeddings[modality], output_modality[i]) for i, modality in enumerate(self.modality)}
-        # x_target = {modality: batch[modality] for modality in output_modality}
-        # x_hat = torch.cat([x_hat[modality] for modality in self.modalities], dim=1)
-        # x_target = torch.cat([x_target[modality] for modality in self.modalities], dim=1)
-        # loss = F.mse_loss(x_hat, x_target)
         x_hat, embeddings = self.forward(batch)
-        embeddings = embeddings[list(embeddings.keys())[0]]
-        loss = F.mse_loss(embeddings, torch.zeros_like(embeddings))
         self.log(f"{stage}/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
@@ -884,7 +870,7 @@ class CrossModalAutoencoder(pl.LightningModule):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
 
 
-class AutoEncoder(pl.LightningModule):
+class AutoEncoderTrainer(pl.LightningModule):
     def __init__(self,
         nc=1,
         nf=128,
