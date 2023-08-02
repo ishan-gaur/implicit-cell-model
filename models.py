@@ -295,3 +295,6 @@ class ImageDecoder(nn.Module):
         for layer in self.layers:
             z = layer(z)
         return z
+
+
+# class SigmaAutoencoder(nn.Module):
