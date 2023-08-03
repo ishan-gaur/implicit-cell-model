@@ -18,7 +18,7 @@ def cell_masks(dapi, gamma_tubulin, suppress_warnings=True):
     if version.parse(torch.__version__) >= version.parse("1.10.0"):
         raise ValueError(f"HPA Cell Segmentator is not compatible with torch >= 1.10.0.\nTorch {torch.__version__} detected. Are you using the 'cell-seg' conda environment?")
     if version.parse(np.__version__) >= version.parse("1.20.0"):
-        raise ValueError(f"HPA Cell Segmentator is not compatible with torch >= 1.10.0.\nTorch {torch.__version__} detected. Are you using the 'cell-seg' conda environment?")
+        raise ValueError(f"HPA Cell Segmentator is not compatible with numpy >= 1.20.0.\nTorch {torch.__version__} detected. Are you using the 'cell-seg' conda environment?")
     if suppress_warnings:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
