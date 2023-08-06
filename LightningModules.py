@@ -54,7 +54,8 @@ class CrossModalDataModule(pl.LightningDataModule):
         
         self.train_datasets, self.val_datasets, self.test_datasets = {}, {}, {}
         for name, dataset in self.datasets.items():
-            self.train_datasets[name], self.val_datasets[name], self.test_datasets[name] = random_split(dataset, self.split[name])
+            generator = torch.Generator().manual_seed(420)
+            self.train_datasets[name], self.val_datasets[name], self.test_datasets[name] = random_split(dataset, self.split[name], generator=generator)
         
     def __shared_dataloader(self, dataset, name, shuffle=True):
         return DataLoader(dataset, batch_size=self.batch_size[name], num_workers=self.num_workers[name], persistent_workers=True, shuffle=shuffle)
@@ -77,7 +78,7 @@ class CrossModalDataModule(pl.LightningDataModule):
         return self.__shared_combined_dataloader(self.test_datasets, shuffle=False)
 
     def get_datasets(self):
-        return datasets
+        return self.datasets
 
 
 class FUCCIDataModule(pl.LightningDataModule):
@@ -847,10 +848,13 @@ class CrossModalAutoencoder(pl.LightningModule):
             z = self.reparameterized_sampling(mu, logvar)
             x_hat[modality] = self.decode(z, modality)
             embeddings[modality] = z
-        return x_hat, embeddings
+        return x_hat, embeddings, x
     
     def __shared_step(self, batch, stage):
-        x_hat, embeddings = self.forward(batch)
+        x_hat, embeddings, x = self.forward(batch)
+        loss = 0
+        for modality in x_hat:
+            loss += F.mse_loss(x_hat[modality], x[modality])
         self.log(f"{stage}/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
