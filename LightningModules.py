@@ -783,21 +783,64 @@ class MultiModalAutoencoder(pl.LightningModule):
     #     scheduler.step(metric)
         # self.log("lr", scheduler._last_lr[0], on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-
-class CrossModalAutoencoder(pl.LightningModule):
-    """
-    Maintains a list of autoencoders for each modality (currently only does images)
-    Assumption is that you can do paired training where modalities use the same dataloader but different slices
-    """
+class FUCCICrossModal(CrossModalAutoencoder):
     def __init__(self,
         modalities: List[str], # names of each modality
         dataloader_config: Dict[str, Tuple[str, Union[slice]]], # dictionary of modalities and their corresponding dataloaders and slices to use
         nc: Union[int, Dict[str, int]] = 2, # number of channels
         nf: Union[int, Dict[str, int]] = 128, # number of filters
         ch_mult: Union[Tuple[int, ...], Dict[str, Tuple[int, ...]]] = (1, 2, 4, 8, 8, 8), # multiple of filters for each layer, each layer downsamples by 2
+        imsize: Union[int, Dict[str, int]] = 128, # size of image
+        latent_dim: int = 128, # size of latent dimension
+        lr: float = 1e-4, # learning rate
+        n_classes: int = 3, # number of classes
+        lambda_disc: float = 1.0, # weight of discriminator loss
+        lambda_class: float = 1.0, # weight of classifier loss
+        **kwargs
+    ):
+        super().__init__(modalities, dataloader_config, nc, nf, ch_mult, imsize, latent_dim, lr, n_classes)
+        # compile all the modules
+        for modality in self.models:
+            for model in self.models[modality]:
+                self.models[modality][model] = torch.compile(self.models[modality][model])
+
+        self.discriminator = torch.compile(self.discriminator)
+        self.classifier = torch.compile(self.classifier)
+
+    def sigma_vae_loss(self, x_hat, x):
+        log_sigma = ((x_hat - x) ** 2).mean(list(range(len(x.shape))), keepdim=True).sqrt().log()
+        min = np.log(self.eps)
+        log_sigma = min + F.softplus(log_sigma - min)
+        gaussian_nll = 0.5 * torch.pow((x_hat - x) / log_sigma.exp(), 2) + log_sigma
+        return gaussian_nll.sum()
+
+    def __shared_step(self, batch, stage):
+        train = (stage == "train")
+        x_hat, embeddings, x = self.forward(batch)
+        loss = 0
+        for modality in x_hat:
+            sigma_loss = self.sigma_vae_loss(x_hat[modality], x[modality])
+            loss += sigma_loss
+            self.log(f"{stage}/loss_sigma_{modality}", sigma_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        return loss 
+
+class CrossModalAutoencoder(pl.LightningModule):
+    """
+    Maintains a list of autoencoders for each modality (currently only does images)
+    Assumption is that you can do paired training where modalities use the same dataloader but different slices
+    """
+    CLASSIFIER = "classifier"
+
+    def __init__(self,
+        modalities: List[str], # names of each modality
+        dataloader_config: Dict[str, Tuple[str, Union[slice, None]]], # dictionary of modalities and their corresponding dataloaders and slices to use
+        nc: Union[int, Dict[str, int]] = 2, # number of channels
+        nf: Union[int, Dict[str, int]] = 128, # number of filters
+        ch_mult: Union[Tuple[int, ...], Dict[str, Tuple[int, ...]]] = (1, 2, 4, 8, 8, 8), # multiple of filters for each layer, each layer downsamples by 2
         imsize: Union[int, Dict[str, int]] = 256,
         latent_dim: int = 512,
         lr: float = 5e-6,
+        n_classes: int = 3,
     ):
 
         super().__init__()
@@ -826,7 +869,7 @@ class CrossModalAutoencoder(pl.LightningModule):
 
         modality_output_len = 2 * latent_dim # mu and logvar
         classifier_input = modality_output_len * len(self.modalities) # concatenate latent spaces from each modality
-        self.classifier = Classifier(d_input=classifier_input, d_output=3) # predict fucci pseudotime classes from the latent space mu, logvar
+        self.classifier = Classifier(d_input=classifier_input, d_output=n_classes) # predict label classes from the concatenated latent space mu, logvar
         self.discriminator = Discriminator(num_classes=len(self.modalities), input_dim=modality_output_len) # predict modality from the latent space mu, logvar
 
         self.dataloader_config = dataloader_config
@@ -852,32 +895,62 @@ class CrossModalAutoencoder(pl.LightningModule):
         return image
 
     def forward(self, x):
-        x = {modality: x[dataset][:, data_slice] for modality, (dataset, data_slice) in self.dataloader_config.items()}
+        x = {}
+        for modality, (dataset, data_slice) in self.dataloader_config.items():
+            if modality != CrossModalAutoencoder.CLASSIFIER:
+                x[modality] = x[dataset][:, data_slice]
+
         x_hat = {}
         embeddings = {}
+        embeddings_sampled = {}
         for modality, images in x.items():
             mu, logvar = self.encode(images, modality)
+            embeddings[modality] = {"mu": mu, "logvar": logvar}
             z = self.reparameterized_sampling(mu, logvar)
             x_hat[modality] = self.decode(z, modality)
-            embeddings[modality] = z
+
         return x_hat, embeddings, x
 
-    def sigma_vae_loss(self, x_hat, x):
-        log_sigma = ((x_hat - x) ** 2).mean(list(range(len(x.shape))), keepdim=True).sqrt().log()
-        min = np.log(self.eps)
-        log_sigma = min + F.softplus(log_sigma - min)
-        gaussian_nll = 0.5 * torch.pow((x_hat - x) / log_sigma.exp(), 2) + log_sigma
-        return gaussian_nll.sum()
-    
+
     def __shared_step(self, batch, stage):
         train = (stage == "train")
         x_hat, embeddings, x = self.forward(batch)
-        loss = 0
+        batch_len = len(batch[next(batch.keys())])
+
+        # autoencoder loss
+        ae_loss = 0
         for modality in x_hat:
-            sigma_loss = self.sigma_vae_loss(x_hat[modality], x[modality])
-            loss += sigma_loss
-            self.log(f"{stage}/loss_sigma_{modality}", sigma_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
-        return loss
+            ae_loss += F.mse_loss(x_hat[modality], x[modality])
+        self.log(f"{stage}/loss_reconstruction", ae_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        # classifier loss
+        classifier_loss = 0
+        for modality in embeddings:
+            dataset, data_slice = self.dataloader_config[CrossModalAutoencoder.CLASSIFIER]
+            y_hat = self.classifier(torch.cat([embeddings[modality]["mu"].detach(), embeddings[modality]["logvar"].detach()], dim=1))
+            y = batch[dataset][:, data_slice] if data_slice is not None else batch[dataset]
+            classifer_loss_m = self.classifier.loss(y_hat, y)
+            classifier_loss += classifer_loss_m
+            self.log(f"{stage}/loss_classifier_{modality}", classifer_loss_m, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log(f"{stage}/loss_classifier", classifier_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        # discriminator loss
+        discriminator_loss = 0
+
+        for modality in embeddings:
+            modality_labels = torch.ones((batch_len)) * self.modalities.index(test_modality)
+            discriminator_loss_m = 0
+            for test_modality in self.modalities:
+                if test_modality != modality:
+                    x_hat = self.decode(embeddings[modality]["mu"].detach(), test_modality)
+                    z_hat_mu, z_hat_logvar = self.encode(x_hat, test_modality)
+                    modality_preds = self.discriminator(torch.cat([z_hat_mu, z_hat_logvar], dim=1))
+                    discriminator_loss_m += self.discriminator.loss(modality_preds, modality_labels)
+            self.log(f"{stage}/loss_discriminator_{modality}", discriminator_loss_m, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+            discriminator_loss += discriminator_loss_m
+        self.log(f"{stage}/loss_discriminator", discriminator_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        return ae_loss
 
     def training_step(self, batch, batch_idx):
         loss = self.__shared_step(batch, "train")
@@ -899,6 +972,7 @@ class CrossModalAutoencoder(pl.LightningModule):
         ae_optimizer = optim.Adam(ae_params, lr=self.lr)
         classifier_optimizer = optim.Adam(self.classifier.parameters(), lr=self.lr)
         discriminator_optimizer = optim.Adam(self.discriminator.parameters(), lr=self.lr)
+        return [ae_optimizer, classifier_optimizer, discriminator_optimizer], []
 
 
 class AutoEncoderTrainer(pl.LightningModule):

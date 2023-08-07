@@ -39,10 +39,11 @@ torch.set_float32_matmul_precision('medium')
 parser = argparse.ArgumentParser(description="Train a model to align the FUCCI dataset reference channels with the FUCCI channels",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("-d", "--data", required=True, help="path to dataset")
+parser.add_argument("-n", "--name", required=True, help="name of dataset version to use")
 parser.add_argument("-r", "--reason", required=True, help="reason for this run")
 parser.add_argument("-e", "--epochs", type=int, default=100, help="maximum number of epochs to train for")
 parser.add_argument("-c", "--checkpoint", help="path to checkpoint to load from")
-parser.add_argument("-n", "--name", default=time.strftime('%Y_%m_%d_%H_%M'), help="Name to help lookup logging directory")
+parser.add_argument("-l", "--log", default=time.strftime('%Y_%m_%d_%H_%M'), help="Run name to help lookup logging directory")
 
 args = parser.parse_args()
 
@@ -67,7 +68,6 @@ config = {
     "lr": 5e-5,
     "epochs": args.epochs,
     "latent_dim": 512,
-    "lambda": 5e6,
 }
 
 def print_with_time(msg):
@@ -75,7 +75,7 @@ def print_with_time(msg):
 
 fucci_path = Path(args.data)
 project_name = f"FUCCI_cross_VAE"
-log_folder = Path(f"/data/ishang/fucci_vae/{project_name}_{args.name}")
+log_folder = Path(f"/data/ishang/fucci_vae/{project_name}_{args.log}")
 if not log_folder.exists():
     os.makedirs(log_folder, exist_ok=True)
     with open(log_folder / "reason.txt", "w") as f:
@@ -106,7 +106,11 @@ latest_checkpoint_callback = ModelCheckpoint(dirpath=lightning_dir, save_last=Tr
 ##########################################################################################
 
 print_with_time("Setting up data module...")
-datasets = {"FUCCI": FUCCIDatasetInMemory(args.data, imsize=config["imsize"])}
+datasets = {
+    "FUCCI": FUCCIDatasetInMemory(args.data, imsize=config["imsize"]),
+    "Pseudotime": PseudotimeClasses(args.data, args.name),
+}
+
 dm = CrossModalDataModule(
     datasets,
     split=config["split"],
@@ -119,10 +123,12 @@ if args.checkpoint is None:
         modalities=["Reference", "FUCCI"],
         dataloader_config={
             "Reference": ("FUCCI", slice(None, 2)),
-            "FUCCI": ("FUCCI", slice(2, None))
+            "FUCCI": ("FUCCI", slice(2, None)),
+            CrossModalAutoencoder.CLASSIFIER: ("Pseudotime", None),
         },
         nc=2,
         nf=128,
+        n_classes=3, # number of pseudotime classes
         ch_mult=(1, 2, 4, 8, 8, 8),
         imsize=256,
         latent_dim=512,
