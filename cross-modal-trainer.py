@@ -10,7 +10,10 @@ from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.strategies import DDPStrategy
 
+import importlib
 from FUCCIDataset import FUCCIDatasetInMemory
+data = importlib.import_module("HPA-embedding.data")
+from data import PseudotimeClasses
 from LightningModules import CrossModalDataModule, CrossModalAutoencoder
 from Metrics import ReconstructionVisualization, EmbeddingLogger
 from Dataset import MultiModalDataModule, ImageChannelDataset

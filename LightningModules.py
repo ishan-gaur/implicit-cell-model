@@ -23,6 +23,9 @@ import matplotlib.pyplot as plt
 from FUCCIDataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
 from FUCCIDataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, FUCCIChannelDatasetInMemory, TotalDatasetInMemory
 from models import Encoder, ImageEncoder, Decoder, ImageDecoder, MapperIn, MapperOut, Discriminator
+import importlib
+embedding_models = importlib.import_module("HPA-embedding.models")
+from embedding_models import Classifier
 from Metrics import FUCCIPredictionLogger 
 
 def broadcast_if_singular(arg, dtype, target):
@@ -38,7 +41,8 @@ class CrossModalDataModule(pl.LightningDataModule):
         datasets: Dict[str, Dataset],
         batch_size: Union[int, Dict[str, int]] = 8,
         num_workers: Union[int, Dict[str, int]] = 1,
-        split: Union[Tuple[int, ...], Dict[str, Tuple[int, ...]]] = (0.64, 0.16, 0.2)
+        split: Union[Tuple[int, ...], Dict[str, Tuple[int, ...]]] = (0.64, 0.16, 0.2),
+        match_len: bool = False,
     ):
         super().__init__()
         self.datasets = datasets
@@ -51,6 +55,9 @@ class CrossModalDataModule(pl.LightningDataModule):
         
         assert len(self.datasets) == len(self.batch_size) == len(self.num_workers) == len(self.split), \
             f"Expected same number of datasets, batch sizes, num_workers and splits, got {len(self.datasets)}, {len(self.batch_size)}, {len(self.num_workers)}, {len(self.split)}"
+
+        if match_len:
+            assert len(set(map(len, self.datasets.values()))) == 1, f"Datasets must have same length, got {[len(dataset) for dataset in self.datasets.values()]}"
         
         self.train_datasets, self.val_datasets, self.test_datasets = {}, {}, {}
         for name, dataset in self.datasets.items():
@@ -817,6 +824,11 @@ class CrossModalAutoencoder(pl.LightningModule):
             for modality in self.modalities
         })
 
+        modality_output_len = 2 * latent_dim # mu and logvar
+        classifier_input = modality_output_len * len(self.modalities) # concatenate latent spaces from each modality
+        self.classifier = Classifier(d_input=classifier_input, d_output=3) # predict fucci pseudotime classes from the latent space mu, logvar
+        self.discriminator = Discriminator(num_classes=len(self.modalities), input_dim=modality_output_len) # predict modality from the latent space mu, logvar
+
         self.dataloader_config = dataloader_config
         self.lr = lr
 
@@ -849,13 +861,22 @@ class CrossModalAutoencoder(pl.LightningModule):
             x_hat[modality] = self.decode(z, modality)
             embeddings[modality] = z
         return x_hat, embeddings, x
+
+    def sigma_vae_loss(self, x_hat, x):
+        log_sigma = ((x_hat - x) ** 2).mean(list(range(len(x.shape))), keepdim=True).sqrt().log()
+        min = np.log(self.eps)
+        log_sigma = min + F.softplus(log_sigma - min)
+        gaussian_nll = 0.5 * torch.pow((x_hat - x) / log_sigma.exp(), 2) + log_sigma
+        return gaussian_nll.sum()
     
     def __shared_step(self, batch, stage):
+        train = (stage == "train")
         x_hat, embeddings, x = self.forward(batch)
         loss = 0
         for modality in x_hat:
-            loss += F.mse_loss(x_hat[modality], x[modality])
-        self.log(f"{stage}/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+            sigma_loss = self.sigma_vae_loss(x_hat[modality], x[modality])
+            loss += sigma_loss
+            self.log(f"{stage}/loss_sigma_{modality}", sigma_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -871,7 +892,13 @@ class CrossModalAutoencoder(pl.LightningModule):
         return loss
     
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=self.lr)
+        ae_params = []
+        for modality in self.modalities:
+            ae_params += list(self.models[modality]["encoder"].parameters())
+            ae_params += list(self.models[modality]["decoder"].parameters())
+        ae_optimizer = optim.Adam(ae_params, lr=self.lr)
+        classifier_optimizer = optim.Adam(self.classifier.parameters(), lr=self.lr)
+        discriminator_optimizer = optim.Adam(self.discriminator.parameters(), lr=self.lr)
 
 
 class AutoEncoderTrainer(pl.LightningModule):
