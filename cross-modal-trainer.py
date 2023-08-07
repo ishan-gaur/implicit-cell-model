@@ -12,8 +12,10 @@ from lightning.pytorch.strategies import DDPStrategy
 
 import importlib
 from FUCCIDataset import FUCCIDatasetInMemory
+import sys
+sys.path.append("./HPA-embedding")
 data = importlib.import_module("HPA-embedding.data")
-from data import PseudotimeClasses
+from data import PseudotimeClasses, CellImageDataset
 from LightningModules import CrossModalDataModule, CrossModalAutoencoder
 from Metrics import ReconstructionVisualization, EmbeddingLogger
 from Dataset import MultiModalDataModule, ImageChannelDataset
@@ -58,8 +60,8 @@ config = {
     "imsize": 256,
     "nf": 128,
     "batch_size": 8,
-    # "devices": [4],
-    "devices": list(range(4, torch.cuda.device_count())),
+    "devices": [4, 5],
+    # "devices": list(range(4, torch.cuda.device_count())),
     # "devices": list(range(0, torch.cuda.device_count())),
     "num_workers": 1,
     # "num_workers": 4,
@@ -106,8 +108,11 @@ latest_checkpoint_callback = ModelCheckpoint(dirpath=lightning_dir, save_last=Tr
 ##########################################################################################
 
 print_with_time("Setting up data module...")
+args.data = Path(args.data)
+index_file = args.data / f"index_{args.name}.csv" # need to chage the CellImageDataset to take in the name and dir
 datasets = {
-    "FUCCI": FUCCIDatasetInMemory(args.data, imsize=config["imsize"]),
+    # "FUCCI": FUCCIDatasetInMemory(args.data, imsize=config["imsize"]),
+    "FUCCI": CellImageDataset(index_file),
     "Pseudotime": PseudotimeClasses(args.data, args.name),
 }
 

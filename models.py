@@ -75,12 +75,12 @@ class Discriminator(nn.Module):
             z = layer(z)
         return self.softmax(z)
 
-    def discriminator_loss(self, inputs, targets):
-        preds = self.forward(inputs)
+    def discriminator_loss(self, preds, targets):
+        # preds = self.forward(inputs)
         return self.cross_entropy(preds, targets)
 
-    def generator_loss(self, embeddings):
-        preds = self.forward(embeddings)
+    def generator_loss(self, preds):
+        # preds = self.forward(embeddings)
         return self.cross_entropy(preds, torch.ones_like(preds) / self.num_classes)
 
 
