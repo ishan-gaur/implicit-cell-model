@@ -168,3 +168,4 @@ nb_images/
 artifacts/
 *.gif
 *.html
+FUCCI-dev-data/*

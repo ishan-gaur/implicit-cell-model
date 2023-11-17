@@ -18,7 +18,7 @@ def cell_masks(dapi, gamma_tubulin, suppress_warnings=True):
     if version.parse(torch.__version__) >= version.parse("1.10.0"):
         raise ValueError(f"HPA Cell Segmentator is not compatible with torch >= 1.10.0.\nTorch {torch.__version__} detected. Are you using the 'cell-seg' conda environment?")
     if version.parse(np.__version__) >= version.parse("1.20.0"):
-        raise ValueError(f"HPA Cell Segmentator is not compatible with torch >= 1.10.0.\nTorch {torch.__version__} detected. Are you using the 'cell-seg' conda environment?")
+        raise ValueError(f"HPA Cell Segmentator is not compatible with numpy >= 1.20.0.\nTorch {torch.__version__} detected. Are you using the 'cell-seg' conda environment?")
     if suppress_warnings:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -66,7 +66,7 @@ def cell_masks_warn(dapi, gamma_tubulin):
 # TODO: currently not adding a way to access the original split structure
 class FUCCIDataset(Dataset):
     """
-    Images are is DAPI, gamma-tubulin, Geminin, and CDT1 order
+    Images are in DAPI, gamma-tubulin, Geminin, CDT1 order
     Geminin is a green fluorescent protein that is present during the S and G2 phases of the cell cycle
     CDT1 is a red fluorescent protein that is present during the G1 and S phases of the cell cycle
     DAPI is a blue fluorescent protein that binds to DNA
@@ -124,6 +124,8 @@ class FUCCIDataset(Dataset):
                 if "var" in split.stem:
                     continue
                 if "embedding" in split.stem:
+                    continue
+                if ".pt" == split.suffix:
                     continue
                 warnings.warn(f"Training split {split} is not a directory")
                 continue
@@ -298,6 +300,12 @@ class FUCCIDatasetInMemory(FUCCIDataset):
             # images[..., 1, :, :] = images_temp[..., 0, :, :]
         return images
 
+    def channel_colors(self):
+        return self.cmap
+    
+    def get_channel_names(self):
+        return self.channels
+
 
 class ReferenceChannelDatasetInMemory(FUCCIDatasetInMemory):
     def __init__(self, *args, **kwargs):
@@ -342,6 +350,13 @@ class ChannelDatasetInMemory(FUCCIDatasetInMemory):
 
     def get_channel_names(self):
         return [self.channels[c] for c in self.channel_slice]
+    
+
+class TotalDatasetInMemory(FUCCIDatasetInMemory):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        shape = self.dataset_images.shape
+        self.dataset_images = self.dataset_images.reshape((-1, 1, shape[-2], shape[-1]))
 
 
 class GemininDatasetInMemory(ChannelDatasetInMemory):

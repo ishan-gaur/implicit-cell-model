@@ -1,3 +1,6 @@
 [submodule "HPA-Cell-Segmentation"]
 	path = HPA-Cell-Segmentation
 	url = git@github.com:CellProfiling/HPA-Cell-Segmentation.git
+[submodule "HPA-embedding"]
+	path = HPA-embedding
+	url = https://github.com/ishan-gaur/HPA-embedding.git
