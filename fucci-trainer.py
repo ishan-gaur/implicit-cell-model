@@ -8,8 +8,8 @@ import lightning.pytorch as pl
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 
-from LightningModules import FUCCIModel, FUCCIDataModule
-from Metrics import ReconstructionVisualization, EmbeddingLogger, FUCCIPredictionLogger
+from lightningmodules import FUCCIModel, FUCCIDataModule
+from metrics import ReconstructionVisualization, EmbeddingLogger, FUCCIPredictionLogger
 
 chkpt = Path("/data/ishang/fucci_vae/FUCCI_total_VAE_2023_06_28_07_08/lightning_logs/277-963202.12.ckpt")
 

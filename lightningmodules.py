@@ -25,7 +25,7 @@ embedding_models = importlib.import_module("HPA-embedding.models")
 from FUCCIDataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
 from FUCCIDataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, FUCCIChannelDatasetInMemory, TotalDatasetInMemory
 from models import Encoder, ImageEncoder, Decoder, ImageDecoder, MapperIn, MapperOut, Discriminator
-from Metrics import FUCCIPredictionLogger 
+from metrics import FUCCIPredictionLogger 
 
 def broadcast_if_singular(arg, dtype, target):
     if isinstance(arg, dtype):

@@ -8,7 +8,7 @@ import lightning.pytorch as pl
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 
-from LightningModules import FUCCIClassifier, FUCCIDataModule
+from lightningmodules import FUCCIClassifier, FUCCIDataModule
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:1024"
 torch.set_float32_matmul_precision('medium')

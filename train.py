@@ -10,9 +10,9 @@ from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.strategies import DDPStrategy
 
-from LightningModules import AutoEncoder, FUCCIDataModule, CrossModalAutoencoder, MultiModalAutoencoder
-from LightningModules import ReconstructionVisualization, EmbeddingLogger
-from Dataset import MultiModalDataModule, ImageChannelDataset
+from lightningmodules import AutoEncoder, FUCCIDataModule, CrossModalAutoencoder, MultiModalAutoencoder
+from lightningmodules import ReconstructionVisualization, EmbeddingLogger
+from dataset import MultiModalDataModule, ImageChannelDataset
 from models import Encoder, Decoder
 
 ##########################################################################################

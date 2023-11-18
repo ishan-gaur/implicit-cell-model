@@ -16,9 +16,9 @@ import sys
 sys.path.append("./HPA-embedding")
 data = importlib.import_module("HPA-embedding.data")
 from data import PseudotimeClasses, CellImageDataset
-from LightningModules import CrossModalDataModule, CrossModalAutoencoder
-from Metrics import ReconstructionVisualization, EmbeddingLogger
-from Dataset import MultiModalDataModule, ImageChannelDataset
+from lightningmodules import CrossModalDataModule, CrossModalAutoencoder
+from metrics import ReconstructionVisualization, EmbeddingLogger
+from dataset import MultiModalDataModule, ImageChannelDataset
 from models import Encoder, Decoder
 
 # TODO check
