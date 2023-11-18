@@ -1,5 +1,7 @@
 # implicit-cell-model
+This repo implements different variants on cross-modal autoencoders for aligning reference channel images with cell-cycle markers. 
 
+## Misc Dev Environment Instructions
 Please lmk if y'all know how to get rid of the `please compile abn` warning when using the segmentation model. Think it has to do with the inplace activated batch-norm library, but I'm not sure why it isn't compiling. Do we need to explicitly install nvcc before install HPA-Cell-Segmentation?
 
 If you get just the raw FUCCI Dataset, you will need to prep it with cell masks and center-of-mass measurements so the centered single-cell images can be extracted from the data upon request.
