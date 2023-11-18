@@ -22,8 +22,8 @@ import matplotlib.pyplot as plt
 
 import importlib
 embedding_models = importlib.import_module("HPA-embedding.models")
-from FUCCIDataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
-from FUCCIDataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, FUCCIChannelDatasetInMemory, TotalDatasetInMemory
+from fucci_dataset import FUCCIDataset, ReferenceChannelDataset, FUCCIChannelDataset
+from fucci_dataset import FUCCIDatasetInMemory, ReferenceChannelDatasetInMemory, FUCCIChannelDatasetInMemory, TotalDatasetInMemory
 from models import Encoder, ImageEncoder, Decoder, ImageDecoder, MapperIn, MapperOut, Discriminator
 from metrics import FUCCIPredictionLogger 
 

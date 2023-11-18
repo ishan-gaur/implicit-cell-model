@@ -11,12 +11,12 @@ from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.strategies import DDPStrategy
 
 import importlib
-from FUCCIDataset import FUCCIDatasetInMemory
+from fucci_dataset import FUCCIDatasetInMemory
 import sys
 sys.path.append("./HPA-embedding")
 data = importlib.import_module("HPA-embedding.data")
 from data import PseudotimeClasses, CellImageDataset
-from lightningmodules import CrossModalDataModule, CrossModalAutoencoder
+from lightning_modules import CrossModalDataModule, CrossModalAutoencoder
 from metrics import ReconstructionVisualization, EmbeddingLogger
 from dataset import MultiModalDataModule, ImageChannelDataset
 from models import Encoder, Decoder
